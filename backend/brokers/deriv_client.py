@@ -6,7 +6,7 @@ Connects directly to Deriv API. No cloud bridge needed. $0 cost.
 import asyncio
 import json
 import time
-from typing import Optional, Dict, List, Tuple, Callable
+from typing import Optional, Dict, List, Tuple
 from datetime import datetime, timezone
 import websockets
 from core.config import config
@@ -27,17 +27,13 @@ class DerivClient:
         self.app_id = getattr(config, 'DERIV_APP_ID', '')
         self.api_token = getattr(config, 'DERIV_API_TOKEN', '')
         self.ws_url = self.WS_URL + self.app_id
-        self.ws: Optional[websockets.WebSocketClientProtocol] = None
-        self.connected: bool = False
-        self._reconnecting: bool = False
-        self._reconnect_count: int = 0
-        self._callbacks: Dict[str, list] = {"tick": [], "price": []}
+        self.ws = None
+        self.connected = False
         self._pending: Dict[str, asyncio.Future] = {}
         self._req_id = 0
-        self.authorized: bool = False
-        self._balance: float = 0
-        self._equity: float = 0
-        self._currency: str = "USD"
+        self.authorized = False
+        self._balance = 0.0
+        self._currency = "USD"
         self._lock = asyncio.Lock()
 
     async def connect(self) -> bool:
@@ -45,39 +41,38 @@ class DerivClient:
             if self.connected:
                 return True
             try:
-                self.ws = await websockets.connect(self.ws_url, ping_interval=20)
+                logger.info(f"Connecting to Deriv at {self.ws_url}")
+                self.ws = await websockets.connect(
+                    self.ws_url,
+                    ping_interval=20,
+                    extra_headers={"User-Agent": "AuroraFlux/1.0"}
+                )
                 self.connected = True
-                self._reconnect_count = 0
                 asyncio.create_task(self._listen())
                 logger.info("Deriv WebSocket connected")
-                await self._authorize()
-                return self.authorized
+                
+                # Authorize
+                auth_resp = await self._send({"authorize": self.api_token})
+                if auth_resp.get("error"):
+                    logger.error(f"Deriv auth failed: {auth_resp['error']}")
+                    return False
+                
+                self.authorized = True
+                logger.info("Deriv authorization successful")
+                
+                # Get balance
+                balance_resp = await self._send({"balance": 1, "account": "all"})
+                if balance_resp.get("balance"):
+                    b = balance_resp["balance"]
+                    self._balance = float(b.get("balance", 0))
+                    self._currency = b.get("currency", "USD")
+                    logger.info(f"Deriv balance: {self._balance} {self._currency}")
+                
+                return True
             except Exception as e:
                 logger.error(f"Deriv connection failed: {e}")
                 self.connected = False
                 return False
-
-    async def _authorize(self) -> bool:
-        try:
-            resp = await self._send({"authorize": self.api_token})
-            if resp.get("error"):
-                logger.error(f"Deriv auth failed: {resp['error']}")
-                return False
-            self.authorized = True
-            logger.info("Deriv authorized")
-            await self._get_balance()
-            return True
-        except Exception as e:
-            logger.error(f"Deriv auth error: {e}")
-            return False
-
-    async def _get_balance(self):
-        resp = await self._send({"balance": 1, "account": "all"})
-        if resp.get("balance"):
-            b = resp["balance"]
-            self._balance = float(b.get("balance", 0))
-            self._currency = b.get("currency", "USD")
-            logger.info(f"Deriv balance: {self._balance} {self._currency}")
 
     async def _listen(self):
         try:
@@ -86,7 +81,8 @@ class DerivClient:
                 req_id = data.get("req_id")
                 if req_id and req_id in self._pending:
                     self._pending.pop(req_id).set_result(data)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Deriv listen error: {e}")
             self.connected = False
 
     async def _send(self, msg: dict, timeout: float = 15) -> dict:
@@ -132,7 +128,8 @@ class DerivClient:
                     "time": datetime.fromtimestamp(int(c.get("epoch", 0)), tz=timezone.utc).isoformat()
                 })
             return result
-        except:
+        except Exception as e:
+            logger.error(f"Candles error: {e}")
             return []
 
     @staticmethod
@@ -142,31 +139,16 @@ class DerivClient:
         return m.get(tf.upper(), 3600)
 
     async def get_symbol_info(self, symbol: str) -> dict:
-        try:
-            resp = await self._send({"active_symbols": "brief", "active_symbols": symbol})
-            symbols = resp.get("active_symbols", [])
-            if symbols:
-                s = symbols[0]
-                pip = 0.01 if "JPY" in symbol.upper() else 0.0001
-                return {
-                    "symbol": symbol, "point": pip,
-                    "digits": 3 if pip == 0.01 else 5,
-                    "min_lot": 0.01, "max_lot": 100,
-                    "lot_step": 0.01, "contract_size": 100000,
-                    "spread": 0, "stops_level": 0
-                }
-        except:
-            pass
         pip = 0.01 if "JPY" in symbol.upper() else 0.0001
-        return {"symbol": symbol, "point": pip, "digits": 5, "min_lot": 0.01,
-                "max_lot": 100, "lot_step": 0.01, "contract_size": 100000,
+        return {"symbol": symbol, "point": pip, "digits": 5 if pip == 0.0001 else 3,
+                "min_lot": 0.01, "max_lot": 100, "lot_step": 0.01, "contract_size": 100000,
                 "spread": 0, "stops_level": 0}
 
     async def market_order(self, symbol: str, direction: str, volume: float,
                            sl: float = None, tp: float = None, comment: str = "") -> Optional[dict]:
         try:
             side = "buy" if direction.upper() in ("BUY", "LONG") else "sell"
-            contract = {"buy": 1, "sell": 1, "contract_type": side.upper(),
+            contract = {"buy": 1, "contract_type": side.upper(),
                         "symbol": symbol, "duration": "day",
                         "basis": "stake", "currency": self._currency,
                         "amount": str(volume)}
@@ -200,13 +182,8 @@ class DerivClient:
                     "volume": float(c.get("buy_price", 0)),
                     "entry_price": float(c.get("buy_price", 0)),
                     "current_price": float(c.get("bid_price", 0)),
-                    "stop_loss": None,
-                    "take_profit": None,
                     "profit": float(c.get("profit", 0)),
-                    "unrealized_pips": 0,
-                    "swap": 0,
                     "comment": "AF_AuroraFlux",
-                    "open_time": ""
                 })
             return result
         except:
@@ -221,15 +198,9 @@ class DerivClient:
         return closed
 
     async def get_account_info(self) -> dict:
-        await self._get_balance()
-        return {
-            "balance": self._balance,
-            "equity": self._balance,
-            "margin": 0,
-            "free_margin": self._balance,
-            "currency": self._currency,
-            "leverage": 100
-        }
+        return {"balance": self._balance, "equity": self._balance,
+                "margin": 0, "free_margin": self._balance,
+                "currency": self._currency, "leverage": 100}
 
     async def get_position_count(self) -> int:
         return len(await self.get_positions())
@@ -251,10 +222,7 @@ class DerivClient:
 
     async def health_check(self) -> dict:
         return {"status": "connected" if self.connected else "disconnected",
-                "authorized": self.authorized}
-
-    def get_spread(self, symbol: str = "EURUSD") -> float:
-        return 1.2
+                "authorized": self.authorized, "balance": self._balance}
 
 
 deriv = DerivClient()
