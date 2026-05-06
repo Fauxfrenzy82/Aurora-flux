@@ -182,4 +182,111 @@ class EnsembleClassifier:
         vol_ratio = indicators.get("volatility_ratio", 1.0)
         ema_align = indicators.get("ema_alignment", 0)
 
-        if bullish_engulfing and ema_align > 
+        if bullish_engulfing and ema_align > 0:
+            return RegimeVote(
+                MarketRegime.TRENDING_UP,
+                0.7,
+                "Bullish engulfing pattern"
+            )
+        elif vol_ratio > 1.3:
+            return RegimeVote(
+                MarketRegime.TRANSITION,
+                0.55,
+                f"Elevated volatility: {vol_ratio:.1f}x"
+            )
+
+        return RegimeVote(
+            MarketRegime.UNCERTAIN,
+            0.4,
+            "No clear pattern detected"
+        )
+
+    def _get_ml_vote(self, indicators: dict) -> RegimeVote:
+        """
+        ML-based regime classification.
+        Placeholder for XGBoost/HMM models.
+        """
+        # Simplified ML-like logic using indicator combinations
+        adx = indicators.get("adx", 20)
+        ema_align = indicators.get("ema_alignment", 0)
+        rsi = indicators.get("rsi_14", 50)
+        vol_ratio = indicators.get("volatility_ratio", 1.0)
+
+        # Simple decision tree logic
+        if adx > 28 and abs(ema_align) > 0.03:
+            if ema_align > 0:
+                return RegimeVote(
+                    MarketRegime.TRENDING_UP,
+                    0.75,
+                    "ML trend detection: bullish"
+                )
+            else:
+                return RegimeVote(
+                    MarketRegime.TRENDING_DOWN,
+                    0.75,
+                    "ML trend detection: bearish"
+                )
+        elif 35 < rsi < 65 and vol_ratio < 0.9:
+            return RegimeVote(
+                MarketRegime.RANGE_BOUND,
+                0.65,
+                "ML range detection"
+            )
+
+        return RegimeVote(
+            MarketRegime.TRANSITION,
+            0.45,
+            "ML: no clear classification"
+        )
+
+    def _apply_hysteresis(
+        self,
+        new_regime: MarketRegime,
+        confidence: float,
+        state: dict,
+        indicators: dict
+    ) -> tuple:
+        """
+        Apply hysteresis to prevent rapid regime switching.
+        Returns (adjusted_regime, adjusted_confidence).
+        """
+        previous = state.get("previous_regime")
+
+        # No history — accept new regime
+        if previous is None:
+            return new_regime, confidence
+
+        # Same regime — reinforce
+        if new_regime == previous:
+            duration = state.get("regime_duration", 0)
+            boost = min(0.1, duration * 0.02)
+            return new_regime, min(0.95, confidence + boost)
+
+        # Different regime — require stronger evidence to switch
+        transition_count = state.get("transition_count", 0)
+        if transition_count < self.TRANSITION_HYSTERESIS:
+            # Require higher confidence to override existing regime
+            override_threshold = 0.7 + transition_count * 0.1
+            if confidence < override_threshold:
+                return previous, confidence * 0.8  # Stick with previous
+
+        return new_regime, confidence
+
+    async def get_historical_regime(self, pair: str) -> Optional[dict]:
+        """Fetch last known regime from database for a pair."""
+        try:
+            return await db.get_latest_regime(pair)
+        except Exception as e:
+            logger.error(f"Failed to fetch historical regime for {pair}: {e}")
+            return None
+
+    def reset_pair(self, pair: str):
+        """Reset regime tracking for a specific pair."""
+        if pair in self._pair_states:
+            del self._pair_states[pair]
+            logger.debug(f"Reset regime tracking for {pair}")
+
+    def reset_all(self):
+        """Reset all regime tracking."""
+        self._pair_states.clear()
+        logger.debug("Reset all regime tracking")
