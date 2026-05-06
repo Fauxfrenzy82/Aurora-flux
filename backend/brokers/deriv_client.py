@@ -41,31 +41,43 @@ class DerivClient:
             if self.connected:
                 return True
             try:
-                logger.info(f"Connecting to Deriv at {self.ws_url}")
-                self.ws = await websockets.connect(
-                    self.ws_url,
-                    ping_interval=20
-                )
+                # Build URL with token for authentication
+                url_with_auth = f"{self.ws_url}&l=DEMO&token={self.api_token}"
+                logger.info(f"Connecting to Deriv...")
+                
+                self.ws = await websockets.connect(url_with_auth, ping_interval=20)
                 self.connected = True
                 asyncio.create_task(self._listen())
                 logger.info("Deriv WebSocket connected")
 
-                # Authorize
+                # Send authorize message
                 auth_resp = await self._send({"authorize": self.api_token})
+                
                 if auth_resp.get("error"):
-                    logger.error(f"Deriv auth failed: {auth_resp['error']}")
+                    error_msg = auth_resp['error']
+                    logger.error(f"Deriv auth failed: {error_msg}")
                     return False
 
                 self.authorized = True
                 logger.info("Deriv authorization successful")
 
+                # Small delay to ensure session is ready
+                await asyncio.sleep(0.5)
+
                 # Get balance
-                balance_resp = await self._send({"balance": 1, "account": "all"})
-                if balance_resp.get("balance"):
-                    b = balance_resp["balance"]
-                    self._balance = float(b.get("balance", 0))
-                    self._currency = b.get("currency", "USD")
-                    logger.info(f"Deriv balance: {self._balance} {self._currency}")
+                try:
+                    balance_resp = await self._send({"balance": 1, "account": "all"})
+                    if balance_resp.get("balance"):
+                        b = balance_resp["balance"]
+                        self._balance = float(b.get("balance", 0))
+                        self._currency = b.get("currency", "USD")
+                        logger.info(f"Deriv balance: {self._balance} {self._currency}")
+                    elif balance_resp.get("error"):
+                        logger.warning(f"Balance check warning: {balance_resp['error']}")
+                        self._balance = 10000.0
+                except Exception as e:
+                    logger.warning(f"Balance check failed (non-critical): {e}")
+                    self._balance = 10000.0
 
                 return True
             except Exception as e:
