@@ -44,22 +44,21 @@ class DerivClient:
                 logger.info(f"Connecting to Deriv at {self.ws_url}")
                 self.ws = await websockets.connect(
                     self.ws_url,
-                    ping_interval=20,
-                    extra_headers={"User-Agent": "AuroraFlux/1.0"}
+                    ping_interval=20
                 )
                 self.connected = True
                 asyncio.create_task(self._listen())
                 logger.info("Deriv WebSocket connected")
-                
+
                 # Authorize
                 auth_resp = await self._send({"authorize": self.api_token})
                 if auth_resp.get("error"):
                     logger.error(f"Deriv auth failed: {auth_resp['error']}")
                     return False
-                
+
                 self.authorized = True
                 logger.info("Deriv authorization successful")
-                
+
                 # Get balance
                 balance_resp = await self._send({"balance": 1, "account": "all"})
                 if balance_resp.get("balance"):
@@ -67,7 +66,7 @@ class DerivClient:
                     self._balance = float(b.get("balance", 0))
                     self._currency = b.get("currency", "USD")
                     logger.info(f"Deriv balance: {self._balance} {self._currency}")
-                
+
                 return True
             except Exception as e:
                 logger.error(f"Deriv connection failed: {e}")
