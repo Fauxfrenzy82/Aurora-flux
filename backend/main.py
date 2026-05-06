@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Dict, List
 import pandas as pd
 
-from brokers.metaapi_client import metaapi
+from brokers.deriv_client import deriv
 from data.indicators import Indicators
 from regime.ensemble import EnsembleClassifier
 from strategies.manager import StrategyManager
@@ -50,9 +50,9 @@ class AuroraFlux:
         logger.info("Initializing Aurora Flux...")
 
         # Connect to broker
-        ok = await metaapi.connect()
+        ok = await deriv.connect()
         if not ok:
-            logger.error("Failed to connect to MetaApi")
+            logger.error("Failed to connect to Deriv")
             return False
 
         # Load strategies
@@ -74,7 +74,7 @@ class AuroraFlux:
         self.manager.load(strategies)
 
         # Get account state
-        acc_info = await metaapi.get_account_info()
+        acc_info = await deriv.get_account_info()
         current_state["equity"] = acc_info.get("equity", config.INITIAL_CAPITAL)
         current_state["balance"] = acc_info.get("balance", config.INITIAL_CAPITAL)
         current_state["connected"] = True
@@ -113,7 +113,7 @@ class AuroraFlux:
         while self.running:
             try:
                 # Update session
-                self.current_session = metaapi.detect_session()
+                self.current_session = deriv.detect_session()
                 now = datetime.now(timezone.utc)
 
                 # Check for day reset
@@ -168,11 +168,10 @@ class AuroraFlux:
     async def _process_symbol(self, symbol: str):
         """Process a single trading symbol."""
         try:
-            # Skip JPY pairs during Asian session for some strategies
             session = self.current_session
 
             # Fetch candle data
-            candles = await metaapi.get_candles(symbol, "H1", 200)
+            candles = await deriv.get_candles(symbol, "H1", 200)
             if not candles or len(candles) < 50:
                 logger.debug(f"Insufficient candle data for {symbol}")
                 return
@@ -233,7 +232,7 @@ class AuroraFlux:
         """Process a single trading signal through governance and execution."""
         try:
             # Get current account state
-            acc_info = await metaapi.get_account_info()
+            acc_info = await deriv.get_account_info()
             equity = acc_info.get("equity", current_state["equity"])
             balance = acc_info.get("balance", current_state["balance"])
 
@@ -367,7 +366,7 @@ class AuroraFlux:
         if not positions:
             return
 
-        account_info = await metaapi.get_account_info()
+        account_info = await deriv.get_account_info()
         current_state["equity"] = account_info.get("equity", current_state["equity"])
         current_state["balance"] = account_info.get("balance", current_state["balance"])
 
@@ -393,10 +392,10 @@ class AuroraFlux:
         try:
             entry = trade_info.get("entry", 0)
             direction = trade_info.get("direction", "LONG")
-            
+
             # Get current price as approximate exit
             symbol = trade_info.get("symbol", "")
-            bid, ask = await metaapi.get_price(symbol)
+            bid, ask = await deriv.get_price(symbol)
             exit_price = bid if direction == "LONG" else ask
             if not exit_price:
                 exit_price = entry
@@ -537,7 +536,7 @@ class AuroraFlux:
     async def _save_snapshot(self):
         """Save periodic account snapshot."""
         try:
-            acc_info = await metaapi.get_account_info()
+            acc_info = await deriv.get_account_info()
             positions = await get_open_positions()
 
             total_exposure = sum(
@@ -569,11 +568,11 @@ class AuroraFlux:
     async def get_status(self) -> dict:
         """Get comprehensive system status."""
         perf_summary = self.manager.get_performance_summary()
-        acc_info = await metaapi.get_account_info()
+        acc_info = await deriv.get_account_info()
 
         return {
             "running": self.running,
-            "connected": metaapi.connected,
+            "connected": deriv.connected,
             "session": self.current_session,
             "mode": config.MODE,
             "halted": self.governance.halted,
@@ -601,7 +600,7 @@ class AuroraFlux:
 
         # Close all positions if configured
         await db.save_event("SHUTDOWN", "Aurora Flux shutting down", {})
-        await metaapi.disconnect()
+        await deriv.disconnect()
         logger.info("Shutdown complete")
 
 
