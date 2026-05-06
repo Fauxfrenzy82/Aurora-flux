@@ -42,7 +42,6 @@ class DerivClient:
     async def _get_otp_websocket_url(self) -> Optional[str]:
         """
         Step 1: Get a one-time WebSocket URL from the Deriv REST API.
-        Uses the correct api.derivws.com endpoint with redirect following.
         """
         otp_path = f"/trading/v1/options/accounts/{self.deriv_login}/otp"
         url = self.REST_API_BASE + otp_path
@@ -54,11 +53,9 @@ class DerivClient:
         }
         
         logger.info(f"Requesting OTP from Deriv REST API at {url}...")
-        logger.debug(f"Using App ID: {self.app_id}")
-        logger.debug(f"Using Login: {self.deriv_login}")
-        logger.debug(f"Token prefix: {self.api_token[:15]}...")
 
         try:
+            # The critical fix: follow_redirects=True
             async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
                 response = await client.post(url, headers=headers)
                 
@@ -66,56 +63,22 @@ class DerivClient:
             
             if response.status_code == 200:
                 data = response.json()
-                logger.debug(f"OTP response data: {json.dumps(data, default=str)[:300]}")
-                
                 ws_url = data.get("websocket_url")
                 if ws_url:
                     logger.info("Successfully obtained OTP WebSocket URL")
                     return ws_url
                 else:
-                    logger.error(f"OTP response missing 'websocket_url'. Full response: {data}")
+                    logger.error(f"OTP response missing 'websocket_url'. Response: {data}")
                     return None
                     
             elif response.status_code == 401:
-                logger.error(
-                    "OTP request failed with 401 Unauthorized. "
-                    "Possible causes:\n"
-                    "1. The Bearer token is invalid or expired\n"
-                    "2. The Deriv-App-ID is incorrect\n"
-                    "3. The token lacks the 'trade' scope\n"
-                    f"Response body: {response.text[:500]}"
-                )
-                return None
-                
-            elif response.status_code == 403:
-                logger.error(
-                    "OTP request failed with 403 Forbidden. "
-                    "Your account may not have API access enabled. "
-                    "Log into deriv.com and try manual trading first."
-                )
-                return None
-                
-            elif response.status_code == 404:
-                logger.error(
-                    f"OTP endpoint not found (404). "
-                    f"The account ID '{self.deriv_login}' may be incorrect, "
-                    f"or the OTP endpoint is not available for this account type."
-                )
+                logger.error("OTP request failed with 401 Unauthorized. Check token and App ID.")
                 return None
                 
             else:
-                logger.error(
-                    f"OTP request failed with status {response.status_code}: "
-                    f"{response.text[:500]}"
-                )
+                logger.error(f"OTP request failed with status {response.status_code}: {response.text[:500]}")
                 return None
                 
-        except httpx.TimeoutException:
-            logger.error("OTP request timed out. Deriv API may be unreachable from this server.")
-            return None
-        except httpx.ConnectError as e:
-            logger.error(f"OTP connection failed: {e}. Render may be blocked by Deriv.")
-            return None
         except Exception as e:
             logger.error(f"Failed to get OTP URL: {type(e).__name__}: {e}")
             return None
@@ -163,10 +126,6 @@ class DerivClient:
 
                 return True
                 
-            except websockets.exceptions.InvalidStatus as e:
-                logger.error(f"WebSocket rejected: HTTP {e.response.status_code}")
-                self.connected = False
-                return False
             except Exception as e:
                 logger.error(f"Deriv connection failed: {type(e).__name__}: {e}")
                 self.connected = False
@@ -194,8 +153,6 @@ class DerivClient:
         self._pending[self._req_id] = future
         await self.ws.send(json.dumps(msg))
         return await asyncio.wait_for(future, timeout=timeout)
-
-    # ── Market Data ──────────────────────────────────────
 
     async def get_price(self, symbol: str) -> Tuple[Optional[float], Optional[float]]:
         """Get current bid/ask for a symbol."""
@@ -261,8 +218,6 @@ class DerivClient:
     def get_spread(self, symbol: str = "EURUSD") -> float:
         """Get current spread in pips."""
         return 1.2
-
-    # ── Orders ───────────────────────────────────────────
 
     async def market_order(
         self, symbol: str, direction: str, volume: float,
@@ -341,8 +296,6 @@ class DerivClient:
                     closed += 1
         return closed
 
-    # ── Account ──────────────────────────────────────────
-
     async def get_account_info(self) -> dict:
         """Get account information."""
         return {
@@ -358,8 +311,6 @@ class DerivClient:
         """Get count of open positions."""
         return len(await self.get_positions())
 
-    # ── Session ──────────────────────────────────────────
-
     @staticmethod
     def detect_session() -> str:
         """Detect current trading session."""
@@ -374,8 +325,6 @@ class DerivClient:
         if 13 <= hour < 22:
             return "NEW_YORK"
         return "ASIAN"
-
-    # ── Connection Management ────────────────────────────
 
     async def disconnect(self):
         """Disconnect from Deriv."""
