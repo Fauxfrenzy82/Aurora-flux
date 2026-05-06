@@ -347,3 +347,50 @@ select
 from trades
 group by date(created_at)
 order by trade_date desc;
+-- ============================================================
+-- APPEND-ONLY ADDITION: Economic Events Table
+-- For Feature: News Ingestion Engine
+-- ============================================================
+create table if not exists economic_events (
+  id bigserial primary key,
+  event_name text not null,
+  currency text not null,
+  impact text not null check (impact in ('HIGH', 'MEDIUM', 'LOW')),
+  scheduled_time timestamptz not null,
+  actual text,
+  forecast text,
+  previous text,
+  processed boolean default false,
+  affected_pairs jsonb default '[]',
+  quiet_period_start timestamptz,
+  quiet_period_end timestamptz,
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_economic_events_time 
+  on economic_events(scheduled_time desc);
+create index if not exists idx_economic_events_currency 
+  on economic_events(currency);
+create index if not exists idx_economic_events_impact 
+  on economic_events(impact);
+
+-- ============================================================
+-- APPEND-ONLY ADDITION: Causal Graph Table
+-- For Feature: Causal Graph Builder
+-- ============================================================
+create table if not exists causal_graph (
+  id bigserial primary key,
+  source_pair text not null,
+  target_pair text not null,
+  granger_p_value numeric(8,6),
+  correlation numeric(6,4),
+  lag_bars int,
+  direction text check (direction in ('POSITIVE', 'NEGATIVE', 'NONE')),
+  confidence numeric(4,3),
+  discovered_at timestamptz default now(),
+  last_verified timestamptz default now(),
+  unique(source_pair, target_pair, lag_bars)
+);
+
+create index if not exists idx_causal_source on causal_graph(source_pair);
+create index if not exists idx_causal_target on causal_graph(target_pair);
