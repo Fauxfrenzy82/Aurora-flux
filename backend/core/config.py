@@ -4,7 +4,7 @@ Reads from environment variables with sensible defaults.
 """
 
 import os
-from typing import List, Tuple
+from typing import List
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,13 +18,14 @@ class Config:
     SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
 
-    # MetaApi
-    METAAPI_TOKEN: str = os.getenv("METAAPI_TOKEN", "")
-    METAAPI_ACCOUNT_ID: str = os.getenv("METAAPI_ACCOUNT_ID", "")
-    METAAPI_APPLICATION: str = os.getenv("METAAPI_APPLICATION", "AuroraFlux")
+    # Deriv Broker (FREE — direct WebSocket, no cloud bridge)
+    DERIV_APP_ID: str = os.getenv("DERIV_APP_ID", "")
+    DERIV_API_TOKEN: str = os.getenv("DERIV_API_TOKEN", "")
+    DERIV_SERVER: str = os.getenv("DERIV_SERVER", "Deriv-Demo")
+    DERIV_LOGIN: str = os.getenv("DERIV_LOGIN", "")
 
-    # Broker
-    BROKER: str = os.getenv("BROKER", "EXNESS")
+    # Account
+    BROKER: str = os.getenv("BROKER", "DERIV")
     ACCOUNT_TYPE: str = os.getenv("ACCOUNT_TYPE", "DEMO")
     INITIAL_CAPITAL: float = float(os.getenv("INITIAL_CAPITAL", "10.0"))
 
@@ -75,8 +76,8 @@ class Config:
         required = [
             "SUPABASE_URL",
             "SUPABASE_SERVICE_ROLE_KEY",
-            "METAAPI_TOKEN",
-            "METAAPI_ACCOUNT_ID",
+            "DERIV_APP_ID",
+            "DERIV_API_TOKEN",
         ]
         missing = [key for key in required if not getattr(cls, key)]
         if missing:
