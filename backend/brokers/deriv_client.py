@@ -15,11 +15,13 @@ from core.logger import get_logger
 
 logger = get_logger("deriv")
 
+
 class DerivClient:
     """Direct WebSocket client for Deriv API."""
 
-    WS_URL = "wss://ws.derivws.com/websockets/v3?app_id="
-
+    # Correct REST API base URL from Deriv documentation
+    REST_API_BASE = "https://api.derivws.com"
+    
     MAX_RECONNECT_ATTEMPTS = 20
     RECONNECT_BASE_DELAY = 2.0
     RECONNECT_MAX_DELAY = 60.0
@@ -28,7 +30,6 @@ class DerivClient:
         self.app_id = getattr(config, 'DERIV_APP_ID', '')
         self.api_token = getattr(config, 'DERIV_API_TOKEN', '')
         self.deriv_login = getattr(config, 'DERIV_LOGIN', '')
-        self.ws_url = self.WS_URL + self.app_id
         self.ws = None
         self.connected = False
         self._pending: Dict[str, asyncio.Future] = {}
@@ -39,49 +40,113 @@ class DerivClient:
         self._lock = asyncio.Lock()
 
     async def _get_otp_websocket_url(self) -> Optional[str]:
-        """Step 1: Get a one-time WebSocket URL from the REST API."""
+        """
+        Step 1: Get a one-time WebSocket URL from the Deriv REST API.
+        Uses the correct api.derivws.com endpoint with redirect following.
+        """
+        otp_path = f"/trading/v1/options/accounts/{self.deriv_login}/otp"
+        url = self.REST_API_BASE + otp_path
+
         headers = {
-            "Authorization": f"Bearer {self.api_token}",
             "Deriv-App-ID": self.app_id,
+            "Authorization": f"Bearer {self.api_token}",
             "Content-Type": "application/json"
         }
-        url = f"https://api.deriv.com/trading/v1/options/accounts/{self.deriv_login}/otp"
-        logger.info(f"Requesting OTP from Deriv REST API...")
+        
+        logger.info(f"Requesting OTP from Deriv REST API at {url}...")
+        logger.debug(f"Using App ID: {self.app_id}")
+        logger.debug(f"Using Login: {self.deriv_login}")
+        logger.debug(f"Token prefix: {self.api_token[:15]}...")
+
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
                 response = await client.post(url, headers=headers)
+                
+            logger.info(f"OTP response status: {response.status_code}")
+            
             if response.status_code == 200:
                 data = response.json()
+                logger.debug(f"OTP response data: {json.dumps(data, default=str)[:300]}")
+                
                 ws_url = data.get("websocket_url")
                 if ws_url:
                     logger.info("Successfully obtained OTP WebSocket URL")
                     return ws_url
                 else:
-                    logger.error(f"OTP response missing 'websocket_url': {data}")
+                    logger.error(f"OTP response missing 'websocket_url'. Full response: {data}")
                     return None
-            else:
-                logger.error(f"OTP request failed with status {response.status_code}: {response.text}")
+                    
+            elif response.status_code == 401:
+                logger.error(
+                    "OTP request failed with 401 Unauthorized. "
+                    "Possible causes:\n"
+                    "1. The Bearer token is invalid or expired\n"
+                    "2. The Deriv-App-ID is incorrect\n"
+                    "3. The token lacks the 'trade' scope\n"
+                    f"Response body: {response.text[:500]}"
+                )
                 return None
+                
+            elif response.status_code == 403:
+                logger.error(
+                    "OTP request failed with 403 Forbidden. "
+                    "Your account may not have API access enabled. "
+                    "Log into deriv.com and try manual trading first."
+                )
+                return None
+                
+            elif response.status_code == 404:
+                logger.error(
+                    f"OTP endpoint not found (404). "
+                    f"The account ID '{self.deriv_login}' may be incorrect, "
+                    f"or the OTP endpoint is not available for this account type."
+                )
+                return None
+                
+            else:
+                logger.error(
+                    f"OTP request failed with status {response.status_code}: "
+                    f"{response.text[:500]}"
+                )
+                return None
+                
+        except httpx.TimeoutException:
+            logger.error("OTP request timed out. Deriv API may be unreachable from this server.")
+            return None
+        except httpx.ConnectError as e:
+            logger.error(f"OTP connection failed: {e}. Render may be blocked by Deriv.")
+            return None
         except Exception as e:
-            logger.error(f"Failed to get OTP URL: {e}")
+            logger.error(f"Failed to get OTP URL: {type(e).__name__}: {e}")
             return None
 
     async def connect(self) -> bool:
+        """Connect to Deriv using OTP-based authentication."""
         async with self._lock:
             if self.connected:
                 return True
+                
             try:
+                # Step 1: Get the one-time WebSocket URL via REST
                 ws_url = await self._get_otp_websocket_url()
                 if not ws_url:
                     logger.error("Could not obtain OTP URL. Aborting connection.")
                     return False
-                logger.info(f"Connecting to Deriv with OTP URL...")
+
+                # Step 2: Connect using the OTP URL
+                logger.info("Connecting to Deriv with OTP WebSocket URL...")
                 self.ws = await websockets.connect(ws_url, ping_interval=20)
                 self.connected = True
                 asyncio.create_task(self._listen())
+                
+                # Step 3: Connection is already authorized via OTP
                 self.authorized = True
-                logger.info("Deriv WebSocket connected and authorized via OTP")
+                logger.info("Deriv WebSocket connected and authenticated via OTP")
+
+                # Small delay for session readiness
                 await asyncio.sleep(0.5)
+
+                # Step 4: Get account balance
                 try:
                     balance_resp = await self._send({"balance": 1, "account": "all"})
                     if balance_resp.get("balance"):
@@ -95,13 +160,20 @@ class DerivClient:
                 except Exception as e:
                     logger.warning(f"Balance check failed (non-critical): {e}")
                     self._balance = 10000.0
+
                 return True
+                
+            except websockets.exceptions.InvalidStatus as e:
+                logger.error(f"WebSocket rejected: HTTP {e.response.status_code}")
+                self.connected = False
+                return False
             except Exception as e:
-                logger.error(f"Deriv connection failed: {e}")
+                logger.error(f"Deriv connection failed: {type(e).__name__}: {e}")
                 self.connected = False
                 return False
 
     async def _listen(self):
+        """Listen for incoming WebSocket messages."""
         try:
             async for msg in self.ws:
                 data = json.loads(msg)
@@ -109,10 +181,11 @@ class DerivClient:
                 if req_id and req_id in self._pending:
                     self._pending.pop(req_id).set_result(data)
         except Exception as e:
-            logger.error(f"Deriv listen error: {e}")
+            logger.error(f"Deriv listen error: {type(e).__name__}: {e}")
             self.connected = False
 
     async def _send(self, msg: dict, timeout: float = 15) -> dict:
+        """Send a message and wait for the response."""
         if not self.connected:
             raise Exception("Not connected")
         self._req_id += 1
@@ -122,7 +195,10 @@ class DerivClient:
         await self.ws.send(json.dumps(msg))
         return await asyncio.wait_for(future, timeout=timeout)
 
+    # ── Market Data ──────────────────────────────────────
+
     async def get_price(self, symbol: str) -> Tuple[Optional[float], Optional[float]]:
+        """Get current bid/ask for a symbol."""
         try:
             if not self.authorized:
                 return None, None
@@ -135,6 +211,7 @@ class DerivClient:
             return None, None
 
     async def get_candles(self, symbol: str, timeframe: str = "1h", count: int = 200) -> list:
+        """Fetch historical candles."""
         try:
             resp = await self._send({
                 "ticks_history": symbol,
@@ -152,7 +229,9 @@ class DerivClient:
                     "low": float(c.get("low", 0)),
                     "close": float(c.get("close", 0)),
                     "volume": int(c.get("epoch", 0)),
-                    "time": datetime.fromtimestamp(int(c.get("epoch", 0)), tz=timezone.utc).isoformat()
+                    "time": datetime.fromtimestamp(
+                        int(c.get("epoch", 0)), tz=timezone.utc
+                    ).isoformat()
                 })
             return result
         except Exception as e:
@@ -161,24 +240,46 @@ class DerivClient:
 
     @staticmethod
     def _tf_to_seconds(tf: str) -> int:
-        m = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800,
-             "H1": 3600, "H4": 14400, "D1": 86400}
+        """Convert timeframe string to seconds."""
+        m = {
+            "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+            "H1": 3600, "H4": 14400, "D1": 86400
+        }
         return m.get(tf.upper(), 3600)
 
     async def get_symbol_info(self, symbol: str) -> dict:
+        """Get symbol specification."""
         pip = 0.01 if "JPY" in symbol.upper() else 0.0001
-        return {"symbol": symbol, "point": pip, "digits": 5 if pip == 0.0001 else 3,
-                "min_lot": 0.01, "max_lot": 100, "lot_step": 0.01, "contract_size": 100000,
-                "spread": 0, "stops_level": 0}
+        return {
+            "symbol": symbol, "point": pip,
+            "digits": 5 if pip == 0.0001 else 3,
+            "min_lot": 0.01, "max_lot": 100,
+            "lot_step": 0.01, "contract_size": 100000,
+            "spread": 0, "stops_level": 0
+        }
 
-    async def market_order(self, symbol: str, direction: str, volume: float,
-                           sl: float = None, tp: float = None, comment: str = "") -> Optional[dict]:
+    def get_spread(self, symbol: str = "EURUSD") -> float:
+        """Get current spread in pips."""
+        return 1.2
+
+    # ── Orders ───────────────────────────────────────────
+
+    async def market_order(
+        self, symbol: str, direction: str, volume: float,
+        sl: float = None, tp: float = None, comment: str = ""
+    ) -> Optional[dict]:
+        """Place a market order."""
         try:
             side = "buy" if direction.upper() in ("BUY", "LONG") else "sell"
-            contract = {"buy": 1, "contract_type": side.upper(),
-                        "symbol": symbol, "duration": "day",
-                        "basis": "stake", "currency": self._currency,
-                        "amount": str(volume)}
+            contract = {
+                "buy": 1,
+                "contract_type": side.upper(),
+                "symbol": symbol,
+                "duration": "day",
+                "basis": "stake",
+                "currency": self._currency,
+                "amount": str(volume)
+            }
             resp = await self._send(contract)
             if resp.get("error"):
                 logger.error(f"Order failed: {resp['error']}")
@@ -190,6 +291,7 @@ class DerivClient:
             return None
 
     async def close_position(self, position_id: str) -> bool:
+        """Close a specific position."""
         try:
             resp = await self._send({"sell": position_id, "price": 0})
             return "error" not in resp
@@ -197,6 +299,7 @@ class DerivClient:
             return False
 
     async def get_positions(self) -> list:
+        """Get all open positions."""
         try:
             resp = await self._send({"portfolio": 1})
             contracts = resp.get("portfolio", {}).get("contracts", [])
@@ -205,7 +308,10 @@ class DerivClient:
                 result.append({
                     "position_id": str(c.get("contract_id", "")),
                     "symbol": c.get("display_name", ""),
-                    "direction": "LONG" if c.get("contract_type", "").startswith("CALL") else "SHORT",
+                    "direction": (
+                        "LONG" if c.get("contract_type", "").startswith("CALL")
+                        else "SHORT"
+                    ),
                     "volume": float(c.get("buy_price", 0)),
                     "entry_price": float(c.get("buy_price", 0)),
                     "current_price": float(c.get("bid_price", 0)),
@@ -217,6 +323,7 @@ class DerivClient:
             return []
 
     async def close_all(self) -> int:
+        """Close all open positions."""
         positions = await self.get_positions()
         closed = 0
         for p in positions:
@@ -224,32 +331,66 @@ class DerivClient:
                 closed += 1
         return closed
 
+    async def close_positions_by_symbol(self, symbol: str) -> int:
+        """Close all positions for a specific symbol."""
+        positions = await self.get_positions()
+        closed = 0
+        for p in positions:
+            if p.get("symbol") == symbol:
+                if await self.close_position(p["position_id"]):
+                    closed += 1
+        return closed
+
+    # ── Account ──────────────────────────────────────────
+
     async def get_account_info(self) -> dict:
-        return {"balance": self._balance, "equity": self._balance,
-                "margin": 0, "free_margin": self._balance,
-                "currency": self._currency, "leverage": 100}
+        """Get account information."""
+        return {
+            "balance": self._balance,
+            "equity": self._balance,
+            "margin": 0,
+            "free_margin": self._balance,
+            "currency": self._currency,
+            "leverage": 100
+        }
 
     async def get_position_count(self) -> int:
+        """Get count of open positions."""
         return len(await self.get_positions())
+
+    # ── Session ──────────────────────────────────────────
 
     @staticmethod
     def detect_session() -> str:
+        """Detect current trading session."""
         hour = datetime.now(timezone.utc).hour
         wd = datetime.now(timezone.utc).weekday()
-        if wd >= 5: return "WEEKEND"
-        if 13 <= hour < 16: return "OVERLAP"
-        if 7 <= hour < 16: return "LONDON"
-        if 13 <= hour < 22: return "NEW_YORK"
+        if wd >= 5:
+            return "WEEKEND"
+        if 13 <= hour < 16:
+            return "OVERLAP"
+        if 7 <= hour < 16:
+            return "LONDON"
+        if 13 <= hour < 22:
+            return "NEW_YORK"
         return "ASIAN"
 
+    # ── Connection Management ────────────────────────────
+
     async def disconnect(self):
+        """Disconnect from Deriv."""
         if self.ws:
             await self.ws.close()
         self.connected = False
 
     async def health_check(self) -> dict:
-        return {"status": "connected" if self.connected else "disconnected",
-                "authorized": self.authorized, "balance": self._balance}
+        """Check broker connection health."""
+        return {
+            "status": "connected" if self.connected else "disconnected",
+            "authorized": self.authorized,
+            "balance": self._balance
+        }
 
 
+# Singleton instance
 deriv = DerivClient()
