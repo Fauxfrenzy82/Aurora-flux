@@ -161,4 +161,174 @@ class ScalpEngine:
             self.scalp_wins = 0
 
             logger.info(
-                f"SCAL
+                f"SCALP MODE ACTIVATED | "
+                f"Session: {conditions.session} | "
+                f"Spread: {conditions.spread_pips}pips | "
+                f"ATR: {conditions.atr_ratio:.1f}x | "
+                f"Window: {self.MAX_SCALP_WINDOW_MINUTES}min"
+            )
+
+            return ScalpState(
+                active=True,
+                conditions=conditions,
+                activated_at=self.activated_at.isoformat(),
+                minutes_remaining=self.MAX_SCALP_WINDOW_MINUTES,
+                reason="All activation conditions met",
+            )
+        else:
+            failed = [k for k, v in checks.items() if not v]
+            return ScalpState(
+                active=False,
+                conditions=conditions,
+                reason=f"Conditions not met: {', '.join(failed)}",
+            )
+
+    def _evaluate_deactivation(self, conditions: ScalpConditions) -> ScalpState:
+        """Check if scalp mode should deactivate."""
+        deactivation_reasons = []
+
+        # Check time limit
+        if self.activated_at:
+            elapsed_minutes = (
+                datetime.now(timezone.utc) - self.activated_at
+            ).total_seconds() / 60
+            if elapsed_minutes >= self.MAX_SCALP_WINDOW_MINUTES:
+                deactivation_reasons.append(
+                    f"Time limit: {elapsed_minutes:.0f}min >= {self.MAX_SCALP_WINDOW_MINUTES}min"
+                )
+            minutes_remaining = max(0, self.MAX_SCALP_WINDOW_MINUTES - elapsed_minutes)
+        else:
+            minutes_remaining = 0
+
+        # Check conditions
+        if conditions.session not in self.SCALP_SESSIONS:
+            deactivation_reasons.append(f"Session ended: {conditions.session}")
+        if conditions.spread_pips > self.DEACTIVATE_SPREAD:
+            deactivation_reasons.append(f"Spread widened: {conditions.spread_pips}pips")
+        if conditions.tick_velocity < self.DEACTIVATE_TICK_VEL:
+            deactivation_reasons.append(f"Tick velocity dropped: {conditions.tick_velocity}/s")
+        if conditions.drawdown > self.DEACTIVATE_DRAWDOWN:
+            deactivation_reasons.append(f"Drawdown elevated: {conditions.drawdown:.1%}")
+        if self.scalp_losses >= self.MAX_CONSECUTIVE_LOSSES:
+            deactivation_reasons.append(
+                f"Consecutive losses: {self.scalp_losses}/{self.MAX_CONSECUTIVE_LOSSES}"
+            )
+
+        if deactivation_reasons:
+            return self._deactivate(deactivation_reasons, conditions)
+
+        return ScalpState(
+            active=True,
+            conditions=conditions,
+            activated_at=self.activated_at.isoformat() if self.activated_at else None,
+            minutes_remaining=round(minutes_remaining, 1),
+            scalp_trades_taken=self.total_scalp_trades,
+            scalp_wins=self.scalp_wins,
+            scalp_losses=self.scalp_losses,
+            reason="Scalp mode active",
+        )
+
+    def _deactivate(
+        self,
+        reasons: list,
+        conditions: ScalpConditions,
+    ) -> ScalpState:
+        """Deactivate scalp mode."""
+        self.active = False
+        self.last_deactivation = datetime.now(timezone.utc)
+
+        # Record session stats
+        session_key = datetime.now(timezone.utc).strftime("%Y%m%d_%H")
+        self.session_stats[session_key] = {
+            "trades": self.total_scalp_trades,
+            "wins": self.scalp_wins,
+            "losses": self.scalp_losses,
+            "reasons": reasons,
+        }
+
+        # Keep only last 50 sessions
+        if len(self.session_stats) > 50:
+            oldest_keys = sorted(self.session_stats.keys())[:len(self.session_stats) - 50]
+            for key in oldest_keys:
+                del self.session_stats[key]
+
+        reason_str = "; ".join(reasons)
+        logger.info(
+            f"SCALP MODE DEACTIVATED | "
+            f"Trades: {self.total_scalp_trades} | "
+            f"W/L: {self.scalp_wins}/{self.scalp_losses} | "
+            f"Reason: {reason_str}"
+        )
+
+        return ScalpState(
+            active=False,
+            conditions=conditions,
+            reason=reason_str,
+            scalp_trades_taken=self.total_scalp_trades,
+            scalp_wins=self.scalp_wins,
+            scalp_losses=self.scalp_losses,
+        )
+
+    def record_scalp_result(self, is_win: bool):
+        """Record result of a scalp trade."""
+        self.total_scalp_trades += 1
+        if is_win:
+            self.scalp_wins += 1
+            self.scalp_losses = 0  # Reset loss streak on win
+        else:
+            self.scalp_losses += 1
+
+        if self.scalp_losses >= self.MAX_CONSECUTIVE_LOSSES and self.active:
+            logger.warning(
+                f"Scalp loss streak: {self.scalp_losses} — deactivating"
+            )
+            # Force deactivation
+            if self.current_conditions:
+                self._deactivate(
+                    [f"Loss streak: {self.scalp_losses}"],
+                    self.current_conditions,
+                )
+
+    def is_scalp_mode(self) -> bool:
+        """Check if scalp mode is currently active."""
+        return self.active
+
+    def get_scalp_params(self) -> dict:
+        """
+        Get adjusted parameters for scalp mode.
+        Returns dict with modified thresholds.
+        """
+        if not self.active:
+            return {}
+
+        return {
+            "confidence_floor": self.SCALP_CONFIDENCE_FLOOR,
+            "max_holding_minutes": self.SCALP_MAX_HOLDING_MINUTES,
+            "min_aggression": self.SCALP_MIN_AGGRESSION,
+            "scalp_mode": True,
+        }
+
+    def get_stats(self) -> dict:
+        """Get scalp engine statistics."""
+        return {
+            "active": self.active,
+            "total_scalp_trades": self.total_scalp_trades,
+            "scalp_wins": self.scalp_wins,
+            "scalp_losses": self.scalp_losses,
+            "win_rate": (
+                self.scalp_wins / self.total_scalp_trades
+                if self.total_scalp_trades > 0
+                else 0
+            ),
+            "current_conditions": (
+                {
+                    "session": self.current_conditions.session,
+                    "spread": self.current_conditions.spread_pips,
+                    "tick_vel": self.current_conditions.tick_velocity,
+                    "atr_ratio": self.current_conditions.atr_ratio,
+                }
+                if self.current_conditions
+                else None
+            ),
+            "recent_sessions": dict(list(self.session_stats.items())[-5:]),
+        }
