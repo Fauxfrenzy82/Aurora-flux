@@ -1,7 +1,7 @@
 """
-Broker integration module — MetaApi bridge to MT5.
+Broker integration module — Deriv WebSocket bridge.
 """
 
-from .metaapi_client import metaapi, MetaApiClient
+from .deriv_client import deriv, DerivClient
 
-__all__ = ["metaapi", "MetaApiClient"]
+__all__ = ["deriv", "DerivClient"]
