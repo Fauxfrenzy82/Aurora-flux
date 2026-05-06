@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from database.supabase_client import db
-from brokers.metaapi_client import metaapi
+from brokers.deriv_client import deriv
 from execution.orders import (
     execute_market,
     close_position,
@@ -88,11 +88,11 @@ async def startup():
         raise
 
     # Connect to broker
-    connected = await metaapi.connect()
+    connected = await deriv.connect()
     current_state["connected"] = connected
 
     if connected:
-        acc_info = await metaapi.get_account_info()
+        acc_info = await deriv.get_account_info()
         current_state["equity"] = acc_info.get("equity", config.INITIAL_CAPITAL)
         current_state["balance"] = acc_info.get("balance", config.INITIAL_CAPITAL)
         current_state["mode"] = config.MODE
@@ -120,7 +120,7 @@ async def shutdown():
     """Graceful shutdown."""
     logger.info("Shutting down API server...")
     await db.save_event("API_SHUTDOWN", "FastAPI server stopping", {})
-    await metaapi.disconnect()
+    await deriv.disconnect()
 
 
 # ── Background State Updater ────────────────────────────
@@ -134,13 +134,13 @@ async def _state_updater():
             ).total_seconds()
 
             if current_state.get("connected"):
-                acc_info = await metaapi.get_account_info()
+                acc_info = await deriv.get_account_info()
                 if acc_info:
                     current_state["equity"] = acc_info.get("equity", current_state["equity"])
                     current_state["balance"] = acc_info.get("balance", current_state["balance"])
 
                 current_state["positions"] = await get_open_positions()
-                current_state["session"] = metaapi.detect_session()
+                current_state["session"] = deriv.detect_session()
                 current_state["halted"] = governance.halted
 
                 # Calculate drawdown
@@ -182,7 +182,7 @@ async def get_status():
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
-    broker_health = await metaapi.health_check()
+    broker_health = await deriv.health_check()
     db_health = await db.health_check()
 
     return {
