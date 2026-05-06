@@ -1,12 +1,12 @@
 """
-Order execution — wraps MetaApi client for trade operations.
+Order execution — wraps Deriv client for trade operations.
 Provides clean interface with proper error handling and logging.
 """
 
 import asyncio
 from dataclasses import dataclass
 from typing import Optional, List
-from brokers.metaapi_client import metaapi
+from brokers.deriv_client import deriv
 from core.logger import get_logger
 from core.config import config
 
@@ -75,7 +75,7 @@ async def execute_market(
     start_time = time.monotonic()
 
     try:
-        result = await metaapi.market_order(
+        result = await deriv.market_order(
             symbol=symbol,
             direction=direction,
             volume=volume,
@@ -133,7 +133,7 @@ async def execute_market(
 async def close_position(position_id: str) -> bool:
     """Close a specific position by ID."""
     try:
-        result = await metaapi.close_position(position_id)
+        result = await deriv.close_position(position_id)
         if result:
             logger.trade("CLOSED", position_id, {"position_id": position_id})
         return result
@@ -145,7 +145,7 @@ async def close_position(position_id: str) -> bool:
 async def close_all() -> int:
     """Close all open positions. Returns count of closed positions."""
     try:
-        count = await metaapi.close_all()
+        count = await deriv.close_all()
         logger.info(f"Closed all positions: {count}")
         return count
     except Exception as e:
@@ -153,21 +153,10 @@ async def close_all() -> int:
         return 0
 
 
-async def close_positions_by_symbol(symbol: str) -> int:
-    """Close all positions for a specific symbol."""
-    try:
-        count = await metaapi.close_positions_by_symbol(symbol)
-        logger.trade("CLOSE_SYMBOL", symbol, {"count": count})
-        return count
-    except Exception as e:
-        logger.error(f"Failed to close positions for {symbol}: {e}")
-        return 0
-
-
 async def get_open_positions() -> list:
     """Get all currently open positions."""
     try:
-        return await metaapi.get_positions()
+        return await deriv.get_positions()
     except Exception as e:
         logger.error(f"Failed to get open positions: {e}")
         return []
@@ -176,23 +165,10 @@ async def get_open_positions() -> list:
 async def get_position_count() -> int:
     """Get count of open positions."""
     try:
-        return await metaapi.get_position_count()
+        return await deriv.get_position_count()
     except Exception as e:
         logger.error(f"Failed to count positions: {e}")
         return 0
-
-
-async def modify_position(
-    position_id: str,
-    stop_loss: float = None,
-    take_profit: float = None
-) -> bool:
-    """Modify stop loss and/or take profit of an open position."""
-    try:
-        return await metaapi.modify_position(position_id, stop_loss, take_profit)
-    except Exception as e:
-        logger.error(f"Failed to modify position {position_id}: {e}")
-        return False
 
 
 async def emergency_close() -> dict:
