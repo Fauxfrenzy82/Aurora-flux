@@ -261,4 +261,58 @@ class PrincipleExtractor:
             try:
                 await self.db.save_principle({
                     "principle_text": principle.principle_text,
-                    "confidence": principle
+                    "confidence": principle.confidence,
+                    "evidence_count": principle.evidence_count,
+                    "applicable_pairs": principle.applicable_pairs,
+                    "applicable_regimes": principle.applicable_regimes,
+                    "status": "ACTIVE",
+                })
+                stored += 1
+            except Exception as e:
+                logger.error(f"Failed to store principle: {e}")
+
+        logger.debug(f"Stored {stored} principles")
+
+    def get_principle_guidance(
+        self,
+        symbol: str,
+        regime: str,
+        session: str,
+    ) -> List[ExtractedPrinciple]:
+        """
+        Get relevant principles for current market context.
+        Used to guide strategy selection.
+        """
+        relevant = []
+        for principle in self.principles:
+            if (
+                symbol in principle.applicable_pairs or
+                not principle.applicable_pairs
+            ):
+                if (
+                    regime in principle.applicable_regimes or
+                    not principle.applicable_regimes
+                ):
+                    relevant.append(principle)
+
+        return sorted(relevant, key=lambda p: p.confidence, reverse=True)
+
+    def get_stats(self) -> dict:
+        """Get principle extraction statistics."""
+        return {
+            "total_principles": len(self.principles),
+            "last_extraction": (
+                self.last_extraction.isoformat()
+                if self.last_extraction
+                else None
+            ),
+            "extraction_count": self.extraction_count,
+            "top_principles": [
+                {
+                    "text": p.principle_text[:100],
+                    "confidence": p.confidence,
+                    "evidence": p.evidence_count,
+                }
+                for p in self.principles[:5]
+            ],
+        }
