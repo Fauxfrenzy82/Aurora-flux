@@ -1,6 +1,7 @@
 """
 Deriv WebSocket client — free broker bridge for Aurora Flux.
 Connects directly to Deriv API using OTP authentication.
+Automatically creates an Options demo account if one is not found.
 """
 
 import asyncio
@@ -39,10 +40,79 @@ class DerivClient:
         self._currency = "USD"
         self._lock = asyncio.Lock()
 
+    async def _ensure_options_account(self) -> bool:
+        """
+        Ensure a Deriv Options demo account exists.
+        If not found, this will create one automatically.
+        Returns True if an account ID is ready, False otherwise.
+        """
+        headers = {
+            "Deriv-App-ID": self.app_id,
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json"
+        }
+
+        logger.info("Checking for existing Deriv Options demo accounts...")
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                # Step 1: List existing Options accounts
+                list_url = f"{self.REST_API_BASE}/trading/v1/options/accounts"
+                list_resp = await client.get(list_url, headers=headers)
+                
+                if list_resp.status_code == 200:
+                    data = list_resp.json()
+                    accounts = data.get("data", [])
+                    if accounts:
+                        # Use the first available account
+                        account_id = accounts[0].get("account_id")
+                        logger.info(f"Found existing Options demo account: {account_id}")
+                        self.deriv_login = account_id
+                        return True
+                
+                # Step 2: No account found — create one
+                logger.info("No Options demo account found. Creating one automatically...")
+                create_data = {
+                    "currency": "USD",
+                    "group": "row",
+                    "account_type": "demo"
+                }
+                create_resp = await client.post(
+                    list_url,
+                    headers=headers,
+                    json=create_data
+                )
+                
+                if create_resp.status_code in (200, 201):
+                    new_data = create_resp.json()
+                    new_account = new_data.get("data", {})
+                    account_id = new_account.get("account_id")
+                    
+                    if account_id:
+                        logger.info(f"New Options demo account created: {account_id}")
+                        self.deriv_login = account_id
+                        return True
+                    else:
+                        logger.error(f"Account created but no ID returned: {new_data}")
+                        return False
+                else:
+                    logger.error(f"Failed to create Options account: {create_resp.status_code} — {create_resp.text[:300]}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"Error during account setup: {type(e).__name__}: {e}")
+            return False
+
     async def _get_otp_websocket_url(self) -> Optional[str]:
         """
-        Step 1: Get a one-time WebSocket URL from the Deriv REST API.
+        Get a one-time WebSocket URL from the Deriv REST API.
+        Ensures an Options account exists before requesting the OTP.
         """
+        # First, make sure we have an Options account
+        if not await self._ensure_options_account():
+            logger.error("Could not obtain or create an Options account. Aborting.")
+            return None
+
+        # Now request the OTP
         otp_path = f"/trading/v1/options/accounts/{self.deriv_login}/otp"
         url = self.REST_API_BASE + otp_path
 
@@ -52,10 +122,9 @@ class DerivClient:
             "Content-Type": "application/json"
         }
         
-        logger.info(f"Requesting OTP from Deriv REST API at {url}...")
+        logger.info(f"Requesting OTP for account {self.deriv_login}...")
 
         try:
-            # The critical fix: follow_redirects=True
             async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
                 response = await client.post(url, headers=headers)
                 
@@ -68,17 +137,32 @@ class DerivClient:
                     logger.info("Successfully obtained OTP WebSocket URL")
                     return ws_url
                 else:
-                    logger.error(f"OTP response missing 'websocket_url'. Response: {data}")
+                    logger.error(f"OTP response missing 'websocket_url'. Response: {json.dumps(data)[:500]}")
                     return None
                     
+            elif response.status_code == 404:
+                logger.error(
+                    f"OTP endpoint not found (404). "
+                    f"The Options account ID '{self.deriv_login}' is not valid. "
+                    f"Full response: {response.text[:500]}"
+                )
+                return None
+                
             elif response.status_code == 401:
-                logger.error("OTP request failed with 401 Unauthorized. Check token and App ID.")
+                logger.error(
+                    "OTP request failed with 401 Unauthorized. "
+                    "Your API token likely lacks the 'trade' scope. "
+                    "Go to api.deriv.com, delete the token, and create a new one with the 'trade' scope enabled."
+                )
                 return None
                 
             else:
                 logger.error(f"OTP request failed with status {response.status_code}: {response.text[:500]}")
                 return None
                 
+        except httpx.TimeoutException:
+            logger.error("OTP request timed out. Deriv API may be temporarily unavailable.")
+            return None
         except Exception as e:
             logger.error(f"Failed to get OTP URL: {type(e).__name__}: {e}")
             return None
@@ -126,6 +210,10 @@ class DerivClient:
 
                 return True
                 
+            except websockets.exceptions.InvalidStatus as e:
+                logger.error(f"WebSocket rejected: HTTP {e.response.status_code}")
+                self.connected = False
+                return False
             except Exception as e:
                 logger.error(f"Deriv connection failed: {type(e).__name__}: {e}")
                 self.connected = False
@@ -153,6 +241,8 @@ class DerivClient:
         self._pending[self._req_id] = future
         await self.ws.send(json.dumps(msg))
         return await asyncio.wait_for(future, timeout=timeout)
+
+    # ── Market Data ──────────────────────────────────────
 
     async def get_price(self, symbol: str) -> Tuple[Optional[float], Optional[float]]:
         """Get current bid/ask for a symbol."""
@@ -218,6 +308,8 @@ class DerivClient:
     def get_spread(self, symbol: str = "EURUSD") -> float:
         """Get current spread in pips."""
         return 1.2
+
+    # ── Orders ───────────────────────────────────────────
 
     async def market_order(
         self, symbol: str, direction: str, volume: float,
@@ -296,6 +388,8 @@ class DerivClient:
                     closed += 1
         return closed
 
+    # ── Account ──────────────────────────────────────────
+
     async def get_account_info(self) -> dict:
         """Get account information."""
         return {
@@ -311,6 +405,8 @@ class DerivClient:
         """Get count of open positions."""
         return len(await self.get_positions())
 
+    # ── Session ──────────────────────────────────────────
+
     @staticmethod
     def detect_session() -> str:
         """Detect current trading session."""
@@ -325,6 +421,8 @@ class DerivClient:
         if 13 <= hour < 22:
             return "NEW_YORK"
         return "ASIAN"
+
+    # ── Connection Management ────────────────────────────
 
     async def disconnect(self):
         """Disconnect from Deriv."""
