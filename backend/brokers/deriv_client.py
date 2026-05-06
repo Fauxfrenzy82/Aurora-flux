@@ -1,28 +1,21 @@
 """
-Deriv WebSocket client — free broker bridge for Aurora Flux.
-Connects directly to Deriv API using OTP authentication.
-Automatically creates an Options demo account if one is not found.
+Deriv WebSocket client using the official python-deriv-api library.
+This is the most reliable connection method.
 """
 
 import asyncio
 import json
-import time
 from typing import Optional, Dict, List, Tuple
 from datetime import datetime, timezone
-import websockets
-import httpx
+from deriv_api import DerivAPI
 from core.config import config
 from core.logger import get_logger
 
 logger = get_logger("deriv")
 
-
 class DerivClient:
-    """Direct WebSocket client for Deriv API."""
+    """WebSocket client for Deriv API using the official library."""
 
-    # Correct REST API base URL from Deriv documentation
-    REST_API_BASE = "https://api.derivws.com"
-    
     MAX_RECONNECT_ATTEMPTS = 20
     RECONNECT_BASE_DELAY = 2.0
     RECONNECT_MAX_DELAY = 60.0
@@ -30,226 +23,55 @@ class DerivClient:
     def __init__(self):
         self.app_id = getattr(config, 'DERIV_APP_ID', '')
         self.api_token = getattr(config, 'DERIV_API_TOKEN', '')
-        self.deriv_login = getattr(config, 'DERIV_LOGIN', '')
-        self.ws = None
+        self.api = None
         self.connected = False
-        self._pending: Dict[str, asyncio.Future] = {}
-        self._req_id = 0
         self.authorized = False
         self._balance = 0.0
         self._currency = "USD"
-        self._lock = asyncio.Lock()
-
-    async def _ensure_options_account(self) -> bool:
-        """
-        Ensure a Deriv Options demo account exists.
-        If not found, this will create one automatically.
-        Returns True if an account ID is ready, False otherwise.
-        """
-        headers = {
-            "Deriv-App-ID": self.app_id,
-            "Authorization": f"Bearer {self.api_token}",
-            "Content-Type": "application/json"
-        }
-
-        logger.info("Checking for existing Deriv Options demo accounts...")
-        try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-                # Step 1: List existing Options accounts
-                list_url = f"{self.REST_API_BASE}/trading/v1/options/accounts"
-                list_resp = await client.get(list_url, headers=headers)
-                
-                if list_resp.status_code == 200:
-                    data = list_resp.json()
-                    accounts = data.get("data", [])
-                    if accounts:
-                        # Use the first available account
-                        account_id = accounts[0].get("account_id")
-                        logger.info(f"Found existing Options demo account: {account_id}")
-                        self.deriv_login = account_id
-                        return True
-                
-                # Step 2: No account found — create one
-                logger.info("No Options demo account found. Creating one automatically...")
-                create_data = {
-                    "currency": "USD",
-                    "group": "row",
-                    "account_type": "demo"
-                }
-                create_resp = await client.post(
-                    list_url,
-                    headers=headers,
-                    json=create_data
-                )
-                
-                if create_resp.status_code in (200, 201):
-                    new_data = create_resp.json()
-                    new_account = new_data.get("data", {})
-                    account_id = new_account.get("account_id")
-                    
-                    if account_id:
-                        logger.info(f"New Options demo account created: {account_id}")
-                        self.deriv_login = account_id
-                        return True
-                    else:
-                        logger.error(f"Account created but no ID returned: {new_data}")
-                        return False
-                else:
-                    logger.error(f"Failed to create Options account: {create_resp.status_code} — {create_resp.text[:300]}")
-                    return False
-                    
-        except Exception as e:
-            logger.error(f"Error during account setup: {type(e).__name__}: {e}")
-            return False
-
-    async def _get_otp_websocket_url(self) -> Optional[str]:
-        """
-        Get a one-time WebSocket URL from the Deriv REST API.
-        Ensures an Options account exists before requesting the OTP.
-        """
-        # First, make sure we have an Options account
-        if not await self._ensure_options_account():
-            logger.error("Could not obtain or create an Options account. Aborting.")
-            return None
-
-        # Now request the OTP
-        otp_path = f"/trading/v1/options/accounts/{self.deriv_login}/otp"
-        url = self.REST_API_BASE + otp_path
-
-        headers = {
-            "Deriv-App-ID": self.app_id,
-            "Authorization": f"Bearer {self.api_token}",
-            "Content-Type": "application/json"
-        }
-        
-        logger.info(f"Requesting OTP for account {self.deriv_login}...")
-
-        try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-                response = await client.post(url, headers=headers)
-                
-            logger.info(f"OTP response status: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                ws_url = data.get("websocket_url")
-                if ws_url:
-                    logger.info("Successfully obtained OTP WebSocket URL")
-                    return ws_url
-                else:
-                    logger.error(f"OTP response missing 'websocket_url'. Response: {json.dumps(data)[:500]}")
-                    return None
-                    
-            elif response.status_code == 404:
-                logger.error(
-                    f"OTP endpoint not found (404). "
-                    f"The Options account ID '{self.deriv_login}' is not valid. "
-                    f"Full response: {response.text[:500]}"
-                )
-                return None
-                
-            elif response.status_code == 401:
-                logger.error(
-                    "OTP request failed with 401 Unauthorized. "
-                    "Your API token likely lacks the 'trade' scope. "
-                    "Go to api.deriv.com, delete the token, and create a new one with the 'trade' scope enabled."
-                )
-                return None
-                
-            else:
-                logger.error(f"OTP request failed with status {response.status_code}: {response.text[:500]}")
-                return None
-                
-        except httpx.TimeoutException:
-            logger.error("OTP request timed out. Deriv API may be temporarily unavailable.")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get OTP URL: {type(e).__name__}: {e}")
-            return None
 
     async def connect(self) -> bool:
-        """Connect to Deriv using OTP-based authentication."""
-        async with self._lock:
-            if self.connected:
-                return True
-                
-            try:
-                # Step 1: Get the one-time WebSocket URL via REST
-                ws_url = await self._get_otp_websocket_url()
-                if not ws_url:
-                    logger.error("Could not obtain OTP URL. Aborting connection.")
-                    return False
+        """Connect to Deriv using the official library."""
+        if self.connected:
+            return True
 
-                # Step 2: Connect using the OTP URL
-                logger.info("Connecting to Deriv with OTP WebSocket URL...")
-                self.ws = await websockets.connect(ws_url, ping_interval=20)
-                self.connected = True
-                asyncio.create_task(self._listen())
-                
-                # Step 3: Connection is already authorized via OTP
-                self.authorized = True
-                logger.info("Deriv WebSocket connected and authenticated via OTP")
-
-                # Small delay for session readiness
-                await asyncio.sleep(0.5)
-
-                # Step 4: Get account balance
-                try:
-                    balance_resp = await self._send({"balance": 1, "account": "all"})
-                    if balance_resp.get("balance"):
-                        b = balance_resp["balance"]
-                        self._balance = float(b.get("balance", 0))
-                        self._currency = b.get("currency", "USD")
-                        logger.info(f"Deriv balance: {self._balance} {self._currency}")
-                    elif balance_resp.get("error"):
-                        logger.warning(f"Balance check warning: {balance_resp['error']}")
-                        self._balance = 10000.0
-                except Exception as e:
-                    logger.warning(f"Balance check failed (non-critical): {e}")
-                    self._balance = 10000.0
-
-                return True
-                
-            except websockets.exceptions.InvalidStatus as e:
-                logger.error(f"WebSocket rejected: HTTP {e.response.status_code}")
-                self.connected = False
-                return False
-            except Exception as e:
-                logger.error(f"Deriv connection failed: {type(e).__name__}: {e}")
-                self.connected = False
-                return False
-
-    async def _listen(self):
-        """Listen for incoming WebSocket messages."""
         try:
-            async for msg in self.ws:
-                data = json.loads(msg)
-                req_id = data.get("req_id")
-                if req_id and req_id in self._pending:
-                    self._pending.pop(req_id).set_result(data)
+            logger.info(f"Connecting to Deriv with official library...")
+            self.api = DerivAPI(app_id=self.app_id)
+            
+            # Authorize with token
+            auth_resp = await self.api.authorize(self.api_token)
+            if auth_resp.get("error"):
+                logger.error(f"Deriv auth failed: {auth_resp['error']}")
+                return False
+            
+            self.authorized = True
+            self.connected = True
+            logger.info("Deriv connected and authorized")
+
+            # Get balance
+            try:
+                balance_resp = await self.api.balance()
+                if balance_resp.get("balance"):
+                    b = balance_resp["balance"]
+                    self._balance = float(b.get("balance", 0))
+                    self._currency = b.get("currency", "USD")
+                    logger.info(f"Deriv balance: {self._balance} {self._currency}")
+            except Exception as e:
+                logger.warning(f"Balance check failed (non-critical): {e}")
+                self._balance = 10000.0
+
+            return True
         except Exception as e:
-            logger.error(f"Deriv listen error: {type(e).__name__}: {e}")
+            logger.error(f"Deriv connection failed: {e}")
             self.connected = False
-
-    async def _send(self, msg: dict, timeout: float = 15) -> dict:
-        """Send a message and wait for the response."""
-        if not self.connected:
-            raise Exception("Not connected")
-        self._req_id += 1
-        msg["req_id"] = self._req_id
-        future = asyncio.get_event_loop().create_future()
-        self._pending[self._req_id] = future
-        await self.ws.send(json.dumps(msg))
-        return await asyncio.wait_for(future, timeout=timeout)
-
-    # ── Market Data ──────────────────────────────────────
+            return False
 
     async def get_price(self, symbol: str) -> Tuple[Optional[float], Optional[float]]:
         """Get current bid/ask for a symbol."""
         try:
             if not self.authorized:
                 return None, None
-            resp = await self._send({"ticks": symbol})
+            resp = await self.api.ticks(symbol)
             tick = resp.get("tick", {})
             bid = float(tick.get("bid", 0))
             ask = float(tick.get("ask", 0))
@@ -260,9 +82,10 @@ class DerivClient:
     async def get_candles(self, symbol: str, timeframe: str = "1h", count: int = 200) -> list:
         """Fetch historical candles."""
         try:
-            resp = await self._send({
+            granularity = self._tf_to_seconds(timeframe)
+            resp = await self.api.ticks_history({
                 "ticks_history": symbol,
-                "granularity": self._tf_to_seconds(timeframe),
+                "granularity": granularity,
                 "count": min(count, 500),
                 "style": "candles",
                 "end": "latest"
@@ -276,9 +99,7 @@ class DerivClient:
                     "low": float(c.get("low", 0)),
                     "close": float(c.get("close", 0)),
                     "volume": int(c.get("epoch", 0)),
-                    "time": datetime.fromtimestamp(
-                        int(c.get("epoch", 0)), tz=timezone.utc
-                    ).isoformat()
+                    "time": datetime.fromtimestamp(int(c.get("epoch", 0)), tz=timezone.utc).isoformat()
                 })
             return result
         except Exception as e:
@@ -287,35 +108,21 @@ class DerivClient:
 
     @staticmethod
     def _tf_to_seconds(tf: str) -> int:
-        """Convert timeframe string to seconds."""
-        m = {
-            "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
-            "H1": 3600, "H4": 14400, "D1": 86400
-        }
+        m = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+             "H1": 3600, "H4": 14400, "D1": 86400}
         return m.get(tf.upper(), 3600)
 
     async def get_symbol_info(self, symbol: str) -> dict:
-        """Get symbol specification."""
         pip = 0.01 if "JPY" in symbol.upper() else 0.0001
-        return {
-            "symbol": symbol, "point": pip,
-            "digits": 5 if pip == 0.0001 else 3,
-            "min_lot": 0.01, "max_lot": 100,
-            "lot_step": 0.01, "contract_size": 100000,
-            "spread": 0, "stops_level": 0
-        }
+        return {"symbol": symbol, "point": pip, "digits": 5 if pip == 0.0001 else 3,
+                "min_lot": 0.01, "max_lot": 100, "lot_step": 0.01, "contract_size": 100000,
+                "spread": 0, "stops_level": 0}
 
     def get_spread(self, symbol: str = "EURUSD") -> float:
-        """Get current spread in pips."""
         return 1.2
 
-    # ── Orders ───────────────────────────────────────────
-
-    async def market_order(
-        self, symbol: str, direction: str, volume: float,
-        sl: float = None, tp: float = None, comment: str = ""
-    ) -> Optional[dict]:
-        """Place a market order."""
+    async def market_order(self, symbol: str, direction: str, volume: float,
+                           sl: float = None, tp: float = None, comment: str = "") -> Optional[dict]:
         try:
             side = "buy" if direction.upper() in ("BUY", "LONG") else "sell"
             contract = {
@@ -327,38 +134,33 @@ class DerivClient:
                 "currency": self._currency,
                 "amount": str(volume)
             }
-            resp = await self._send(contract)
+            resp = await self.api.buy(contract)
             if resp.get("error"):
                 logger.error(f"Order failed: {resp['error']}")
                 return None
-            buy_info = resp.get("buy") or resp.get("sell") or {}
-            return {"orderId": str(buy_info.get("contract_id", int(time.time())))}
+            buy_info = resp.get("buy") or {}
+            return {"orderId": str(buy_info.get("contract_id", int(datetime.now().timestamp())))}
         except Exception as e:
             logger.error(f"Order error: {e}")
             return None
 
     async def close_position(self, position_id: str) -> bool:
-        """Close a specific position."""
         try:
-            resp = await self._send({"sell": position_id, "price": 0})
+            resp = await self.api.sell({"sell": position_id})
             return "error" not in resp
         except:
             return False
 
     async def get_positions(self) -> list:
-        """Get all open positions."""
         try:
-            resp = await self._send({"portfolio": 1})
+            resp = await self.api.portfolio()
             contracts = resp.get("portfolio", {}).get("contracts", [])
             result = []
             for c in contracts:
                 result.append({
                     "position_id": str(c.get("contract_id", "")),
                     "symbol": c.get("display_name", ""),
-                    "direction": (
-                        "LONG" if c.get("contract_type", "").startswith("CALL")
-                        else "SHORT"
-                    ),
+                    "direction": "LONG" if c.get("contract_type", "").startswith("CALL") else "SHORT",
                     "volume": float(c.get("buy_price", 0)),
                     "entry_price": float(c.get("buy_price", 0)),
                     "current_price": float(c.get("bid_price", 0)),
@@ -370,7 +172,6 @@ class DerivClient:
             return []
 
     async def close_all(self) -> int:
-        """Close all open positions."""
         positions = await self.get_positions()
         closed = 0
         for p in positions:
@@ -379,7 +180,6 @@ class DerivClient:
         return closed
 
     async def close_positions_by_symbol(self, symbol: str) -> int:
-        """Close all positions for a specific symbol."""
         positions = await self.get_positions()
         closed = 0
         for p in positions:
@@ -388,56 +188,32 @@ class DerivClient:
                     closed += 1
         return closed
 
-    # ── Account ──────────────────────────────────────────
-
     async def get_account_info(self) -> dict:
-        """Get account information."""
-        return {
-            "balance": self._balance,
-            "equity": self._balance,
-            "margin": 0,
-            "free_margin": self._balance,
-            "currency": self._currency,
-            "leverage": 100
-        }
+        return {"balance": self._balance, "equity": self._balance,
+                "margin": 0, "free_margin": self._balance,
+                "currency": self._currency, "leverage": 100}
 
     async def get_position_count(self) -> int:
-        """Get count of open positions."""
         return len(await self.get_positions())
-
-    # ── Session ──────────────────────────────────────────
 
     @staticmethod
     def detect_session() -> str:
-        """Detect current trading session."""
         hour = datetime.now(timezone.utc).hour
         wd = datetime.now(timezone.utc).weekday()
-        if wd >= 5:
-            return "WEEKEND"
-        if 13 <= hour < 16:
-            return "OVERLAP"
-        if 7 <= hour < 16:
-            return "LONDON"
-        if 13 <= hour < 22:
-            return "NEW_YORK"
+        if wd >= 5: return "WEEKEND"
+        if 13 <= hour < 16: return "OVERLAP"
+        if 7 <= hour < 16: return "LONDON"
+        if 13 <= hour < 22: return "NEW_YORK"
         return "ASIAN"
 
-    # ── Connection Management ────────────────────────────
-
     async def disconnect(self):
-        """Disconnect from Deriv."""
-        if self.ws:
-            await self.ws.close()
+        if self.api:
+            await self.api.disconnect()
         self.connected = False
 
     async def health_check(self) -> dict:
-        """Check broker connection health."""
-        return {
-            "status": "connected" if self.connected else "disconnected",
-            "authorized": self.authorized,
-            "balance": self._balance
-        }
+        return {"status": "connected" if self.connected else "disconnected",
+                "authorized": self.authorized, "balance": self._balance}
 
 
-# Singleton instance
 deriv = DerivClient()
