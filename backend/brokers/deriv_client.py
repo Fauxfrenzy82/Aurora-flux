@@ -1,6 +1,6 @@
 """
-Deriv WebSocket client using OTP-based authentication.
-Connects to the Deriv API. $0 cost.
+Deriv WebSocket client — free broker bridge for Aurora Flux.
+Connects directly to Deriv API using OTP authentication.
 """
 
 import asyncio
@@ -16,11 +16,9 @@ from core.logger import get_logger
 logger = get_logger("deriv")
 
 class DerivClient:
-    """WebSocket client for Deriv API using OTP authentication."""
+    """Direct WebSocket client for Deriv API."""
 
-    # REST endpoint to get the one-time WebSocket URL
-    OTP_URL = "https://api.deriv.com/trading/v1/options/accounts/{account_id}/otp"
-    WS_APP_URL = "wss://ws.derivws.com/websockets/v3?app_id="
+    WS_URL = "wss://ws.derivws.com/websockets/v3?app_id="
 
     MAX_RECONNECT_ATTEMPTS = 20
     RECONNECT_BASE_DELAY = 2.0
@@ -30,6 +28,7 @@ class DerivClient:
         self.app_id = getattr(config, 'DERIV_APP_ID', '')
         self.api_token = getattr(config, 'DERIV_API_TOKEN', '')
         self.deriv_login = getattr(config, 'DERIV_LOGIN', '')
+        self.ws_url = self.WS_URL + self.app_id
         self.ws = None
         self.connected = False
         self._pending: Dict[str, asyncio.Future] = {}
@@ -40,23 +39,17 @@ class DerivClient:
         self._lock = asyncio.Lock()
 
     async def _get_otp_websocket_url(self) -> Optional[str]:
-        """
-        Step 1: Get a one-time WebSocket URL from the REST API.
-        """
+        """Step 1: Get a one-time WebSocket URL from the REST API."""
         headers = {
             "Authorization": f"Bearer {self.api_token}",
             "Deriv-App-ID": self.app_id,
             "Content-Type": "application/json"
         }
-
-        # The account ID for the URL is your Deriv login ID
-        url = "https://api.deriv.com/trading/v1/options/accounts/6112943/otp"
+        url = f"https://api.deriv.com/trading/v1/options/accounts/{self.deriv_login}/otp"
         logger.info(f"Requesting OTP from Deriv REST API...")
-
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(url, headers=headers)
-
             if response.status_code == 200:
                 data = response.json()
                 ws_url = data.get("websocket_url")
@@ -64,7 +57,7 @@ class DerivClient:
                     logger.info("Successfully obtained OTP WebSocket URL")
                     return ws_url
                 else:
-                    logger.error(f"OTP response is missing 'websocket_url': {data}")
+                    logger.error(f"OTP response missing 'websocket_url': {data}")
                     return None
             else:
                 logger.error(f"OTP request failed with status {response.status_code}: {response.text}")
@@ -78,25 +71,17 @@ class DerivClient:
             if self.connected:
                 return True
             try:
-                # 1. Get the one-time WebSocket URL
                 ws_url = await self._get_otp_websocket_url()
                 if not ws_url:
                     logger.error("Could not obtain OTP URL. Aborting connection.")
                     return False
-
-                # 2. Connect using the OTP URL
                 logger.info(f"Connecting to Deriv with OTP URL...")
                 self.ws = await websockets.connect(ws_url, ping_interval=20)
                 self.connected = True
                 asyncio.create_task(self._listen())
-                
                 self.authorized = True
                 logger.info("Deriv WebSocket connected and authorized via OTP")
-
-                # Small delay to ensure session is ready
                 await asyncio.sleep(0.5)
-
-                # 3. Get account balance
                 try:
                     balance_resp = await self._send({"balance": 1, "account": "all"})
                     if balance_resp.get("balance"):
@@ -110,7 +95,6 @@ class DerivClient:
                 except Exception as e:
                     logger.warning(f"Balance check failed (non-critical): {e}")
                     self._balance = 10000.0
-
                 return True
             except Exception as e:
                 logger.error(f"Deriv connection failed: {e}")
