@@ -21,15 +21,19 @@ export default function RootLayout({
   const { isLoading: storeLoading, setRefreshing } = useSystemStore();
 
   useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    let cancelled = false;
+
     const initialize = async () => {
       try {
-        // Initial data fetch
         const [status, strategies, performance, snapshots] = await Promise.all([
           getStatus(),
-          getStrategies({ status: 'ACTIVE' }),
+          getStrategies(),
           getPerformance(),
           getSnapshots(100),
         ]);
+
+        if (cancelled) return;
 
         const store = useSystemStore.getState();
         store.updateFromStatus(status);
@@ -37,37 +41,34 @@ export default function RootLayout({
         store.setPerformance(performance);
         store.setEquityHistory(snapshots);
 
-        // Initialize WebSocket
         initWebSocketStore();
 
-        // Start periodic polling (every 10 seconds)
-        const interval = setInterval(async () => {
-          if (!document.hidden) {
-            store.setRefreshing(true);
-            try {
-              const newStatus = await getStatus();
-              store.updateFromStatus(newStatus);
-
-              // Refresh strategies periodically
-              const newStrategies = await getStrategies({ status: 'ACTIVE' });
-              store.setStrategies(newStrategies);
-            } catch (error) {
-              console.error('Polling error:', error);
-            } finally {
-              store.setRefreshing(false);
-            }
+        interval = setInterval(async () => {
+          if (cancelled || document.hidden) return;
+          store.setRefreshing(true);
+          try {
+            const newStatus = await getStatus();
+            if (!cancelled) store.updateFromStatus(newStatus);
+          } catch (error) {
+            console.error('Polling error:', error);
+          } finally {
+            if (!cancelled) store.setRefreshing(false);
           }
         }, 10000);
 
-        return () => clearInterval(interval);
       } catch (error) {
         console.error('Initialization error:', error);
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
 
     initialize();
+
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+    };
   }, []);
 
   if (isLoading || storeLoading) {
@@ -106,7 +107,6 @@ export default function RootLayout({
           </main>
         </div>
 
-        {/* Chat Button */}
         <button
           onClick={() => setIsChatOpen(!isChatOpen)}
           className="fixed bottom-4 right-4 z-50 h-12 w-12 rounded-full bg-aurora-600 hover:bg-aurora-500 text-white shadow-lg transition-all flex items-center justify-center"
@@ -114,7 +114,6 @@ export default function RootLayout({
           <MessageSquare className="h-5 w-5" />
         </button>
 
-        {/* Chat Window */}
         {isChatOpen && (
           <div className="fixed bottom-20 right-4 z-50 w-96 shadow-2xl">
             <ChatWindow
