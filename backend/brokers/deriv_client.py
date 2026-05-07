@@ -21,7 +21,7 @@ class DerivClient:
     """Direct WebSocket client for Deriv API."""
 
     REST_API_BASE = "https://api.derivws.com"
-    
+
     MAX_RECONNECT_ATTEMPTS = 20
     RECONNECT_BASE_DELAY = 2.0
     RECONNECT_MAX_DELAY = 60.0
@@ -97,14 +97,15 @@ class DerivClient:
                 response = await client.post(url, headers=headers)
             logger.info(f"OTP response status: {response.status_code}")
             if response.status_code == 200:
-                data = response.json()
-                # Deriv returns "url" in the data field, not "websocket_url"
-                ws_url = data.get("url") or data.get("websocket_url")
+                resp_json = response.json()
+                # The URL is nested inside a "data" key in the response: {"data": {"url": "wss://..."}}
+                inner_data = resp_json.get("data", {})
+                ws_url = inner_data.get("url") or inner_data.get("websocket_url")
                 if ws_url:
                     logger.info("Successfully obtained OTP WebSocket URL")
                     return ws_url
                 else:
-                    logger.error(f"OTP response missing URL. Response: {json.dumps(data)[:500]}")
+                    logger.error(f"OTP response missing URL. Response: {json.dumps(resp_json)[:500]}")
                     return None
             elif response.status_code == 404:
                 logger.error(f"OTP endpoint not found (404). Account ID '{self.deriv_login}' may be invalid.")
