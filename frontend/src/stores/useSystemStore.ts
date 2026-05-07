@@ -22,59 +22,43 @@ import type {
 import { getWebSocket } from '@/lib/websocket';
 
 interface SystemState {
-  // ── Connection ──────────────────────────────────
   isConnected: boolean;
   connectionState: 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
   lastUpdate: string | null;
   error: string | null;
-
-  // ── Account ─────────────────────────────────────
   equity: number;
   balance: number;
   dailyPnL: number;
   dailyPnLPct: number;
   equityHistory: EquityPoint[];
   accountInfo: AccountInfo | null;
-
-  // ── Mode & Phase ────────────────────────────────
   mode: Mode;
   phaseDay: number;
   phaseNumber: number;
-
-  // ── Regime & Session ────────────────────────────
   regime: RegimeType | string;
   regimeConfidence: number;
   session: string;
   scalpModeActive: boolean;
   marketOpen: boolean;
   halted: boolean;
-
-  // ── Risk ────────────────────────────────────────
   drawdownPct: number;
   maxDrawdownPct: number;
   riskOfRuin: number;
   totalExposurePct: number;
   dailyCapRemaining: number;
-
-  // ── Data ────────────────────────────────────────
   positions: Position[];
   strategies: Strategy[];
   signals: Signal[];
   recentTrades: Trade[];
   lastGovernance: GovernanceDecision | null;
   performance: PerformanceSummary | null;
-
-  // ── Chat ────────────────────────────────────────
   chatMessages: ChatMessage[];
-
-  // ── UI ──────────────────────────────────────────
   isLoading: boolean;
   isRefreshing: boolean;
   selectedStrategy: Strategy | null;
   activeRoute: string;
   uptimeSeconds: number;
 
-  // ── Actions ─────────────────────────────────────
   setConnected: (connected: boolean) => void;
   setError: (error: string | null) => void;
   updateFromStatus: (status: SystemStatus) => void;
@@ -165,75 +149,45 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       isConnected: status.connected,
       lastUpdate: status.last_update || new Date().toISOString(),
       uptimeSeconds: status.uptime_seconds || 0,
-      governance: status.governance
-        ? {
-            halted: status.governance.halted,
-            haltReason: status.governance.halt_reason,
-            totalEvaluated: status.governance.total_evaluated,
-            approved: status.governance.approved,
-            rejected: status.governance.rejected,
-            approvalRate: status.governance.approval_rate,
-          }
-        : undefined,
       isLoading: false,
     }),
 
   updateEquity: (equity: number, balance: number, dailyPnL: number) =>
     set((state) => ({
-      equity,
-      balance,
-      dailyPnL,
+      equity, balance, dailyPnL,
       dailyPnLPct: balance > 0 ? (dailyPnL / balance) * 100 : 0,
-      equityHistory: [
-        ...state.equityHistory,
-        { timestamp: new Date().toISOString(), equity },
-      ].slice(-200),
+      equityHistory: [...state.equityHistory, { timestamp: new Date().toISOString(), equity }].slice(-200),
       lastUpdate: new Date().toISOString(),
     })),
 
   addPosition: (position: Position) =>
-    set((state) => ({
-      positions: [position, ...state.positions],
-    })),
+    set((state) => ({ positions: [position, ...state.positions] })),
 
   removePosition: (positionId: string) =>
-    set((state) => ({
-      positions: state.positions.filter((p) => p.position_id !== positionId),
-    })),
+    set((state) => ({ positions: state.positions.filter((p) => p.position_id !== positionId) })),
 
   updatePosition: (position: Position) =>
     set((state) => ({
-      positions: state.positions.map((p) =>
-        p.position_id === position.position_id ? position : p
-      ),
+      positions: state.positions.map((p) => (p.position_id === position.position_id ? position : p)),
     })),
 
   addSignal: (signal: Signal) =>
-    set((state) => ({
-      signals: [signal, ...state.signals].slice(0, 100),
-    })),
+    set((state) => ({ signals: [signal, ...state.signals].slice(0, 100) })),
 
   setStrategies: (strategies: Strategy[]) => set({ strategies }),
 
-  setRecentTrades: (trades: Trade[]) =>
-    set({ recentTrades: trades.slice(0, 50) }),
+  setRecentTrades: (trades: Trade[]) => set({ recentTrades: trades.slice(0, 50) }),
 
-  setEquityHistory: (history: EquityPoint[]) =>
-    set({ equityHistory: history }),
+  setEquityHistory: (history: EquityPoint[]) => set({ equityHistory: history }),
 
-  setPerformance: (performance: PerformanceSummary) =>
-    set({ performance }),
+  setPerformance: (performance: PerformanceSummary) => set({ performance }),
 
   addChatMessage: (message: ChatMessage) =>
-    set((state) => ({
-      chatMessages: [...state.chatMessages, message].slice(-200),
-    })),
+    set((state) => ({ chatMessages: [...state.chatMessages, message].slice(-200) })),
 
-  setGovernance: (decision: GovernanceDecision) =>
-    set({ lastGovernance: decision }),
+  setGovernance: (decision: GovernanceDecision) => set({ lastGovernance: decision }),
 
-  setRegime: (regime: string, confidence: number) =>
-    set({ regime, regimeConfidence: confidence }),
+  setRegime: (regime: string, confidence: number) => set({ regime, regimeConfidence: confidence }),
 
   setSession: (session: string) => set({ session }),
 
@@ -243,8 +197,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
   setHalted: (halted: boolean) => set({ halted }),
 
-  setSelectedStrategy: (strategy: Strategy | null) =>
-    set({ selectedStrategy: strategy }),
+  setSelectedStrategy: (strategy: Strategy | null) => set({ selectedStrategy: strategy }),
 
   setActiveRoute: (route: string) => set({ activeRoute: route }),
 
@@ -252,8 +205,6 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 
   reset: () => set(initialState),
 }));
-
-// ── WebSocket Integration ─────────────────────────────────
 
 let wsUnsubscribers: (() => void)[] = [];
 
@@ -267,66 +218,38 @@ export function initWebSocketStore(): void {
 
   wsUnsubscribers.push(
     ws.on('equity_update', (data) => {
-      setState({
-        equity: data.equity as number,
-        balance: data.balance as number,
-        dailyPnL: (data.daily_pnl as number) || 0,
-        lastUpdate: new Date().toISOString(),
-      });
+      setState({ equity: data.equity as number, balance: data.balance as number, dailyPnL: (data.daily_pnl as number) || 0, lastUpdate: new Date().toISOString() });
     }),
-
     ws.on('position_opened', (data) => {
-      setState((state) => ({
-        positions: [data as unknown as Position, ...state.positions],
-      }));
+      setState((state) => ({ positions: [data as unknown as Position, ...state.positions] }));
     }),
-
     ws.on('position_closed', (data) => {
       const positionId = data.position_id as string;
-      setState((state) => ({
-        positions: state.positions.filter((p) => p.position_id !== positionId),
-      }));
+      setState((state) => ({ positions: state.positions.filter((p) => p.position_id !== positionId) }));
     }),
-
     ws.on('position_updated', (data) => {
       const position = data as unknown as Position;
-      setState((state) => ({
-        positions: state.positions.map((p) =>
-          p.position_id === position.position_id ? position : p
-        ),
-      }));
+      setState((state) => ({ positions: state.positions.map((p) => (p.position_id === position.position_id ? position : p)) }));
     }),
-
     ws.on('signal_generated', (data) => {
-      setState((state) => ({
-        signals: [data as unknown as Signal, ...state.signals].slice(0, 100),
-      }));
+      setState((state) => ({ signals: [data as unknown as Signal, ...state.signals].slice(0, 100) }));
     }),
-
     ws.on('governance_decision', (data) => {
       setState({ lastGovernance: data as unknown as GovernanceDecision });
     }),
-
     ws.on('regime_changed', (data) => {
-      setState({
-        regime: (data.regime as string) || 'UNKNOWN',
-        regimeConfidence: (data.confidence as number) || 0,
-      });
+      setState({ regime: (data.regime as string) || 'UNKNOWN', regimeConfidence: (data.confidence as number) || 0 });
     }),
-
     ws.on('session_changed', (data) => {
       setState({ session: (data.session as string) || 'UNKNOWN' });
     }),
-
     ws.on('scalp_mode_toggled', (data) => {
       setState({ scalpModeActive: (data.active as boolean) || false });
     }),
-
     ws.on('error_alert', (data) => {
       setState({ error: (data.message as string) || 'Unknown error' });
       setTimeout(() => setState({ error: null }), 10000);
     }),
-
     ws.on('state_update', (data) => {
       const status = data as unknown as SystemStatus;
       store().updateFromStatus(status);
