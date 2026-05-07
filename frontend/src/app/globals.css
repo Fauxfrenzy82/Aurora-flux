@@ -4,7 +4,7 @@
 
 @layer base {
   * {
-    @apply border-border;
+    @apply border-surface-700;
   }
 
   html {
@@ -16,7 +16,6 @@
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 
-  /* Custom scrollbar */
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -34,19 +33,16 @@
     @apply bg-surface-500;
   }
 
-  /* Selection */
   ::selection {
     @apply bg-aurora-600/30 text-aurora-100;
   }
 
-  /* Focus ring */
   :focus-visible {
     @apply outline-none ring-2 ring-aurora-500 ring-offset-2 ring-offset-surface-900;
   }
 }
 
 @layer components {
-  /* Custom scrollbar class */
   .custom-scrollbar::-webkit-scrollbar {
     width: 4px;
   }
@@ -59,17 +55,14 @@
     @apply bg-surface-600 rounded-full;
   }
 
-  /* Gradient text */
   .gradient-text {
     @apply bg-gradient-to-r from-aurora-400 to-aurora-600 bg-clip-text text-transparent;
   }
 
-  /* Glass effect */
   .glass {
     @apply bg-surface-800/50 backdrop-blur-sm border border-surface-700/50;
   }
 
-  /* Number animations */
   @keyframes countUp {
     from {
       opacity: 0;
@@ -86,7 +79,6 @@
   }
 }
 
-/* Recharts custom styles */
 .recharts-cartesian-grid-horizontal line,
 .recharts-cartesian-grid-vertical line {
   stroke: #1f2937;
@@ -116,7 +108,6 @@
   @apply text-gray-400 !important;
 }
 
-/* Animation delays */
 .animation-delay-100 {
   animation-delay: 100ms;
 }
@@ -133,12 +124,10 @@
   animation-delay: 500ms;
 }
 
-/* Loading skeleton */
 .skeleton {
   @apply bg-surface-700 animate-pulse rounded;
 }
 
-/* Status indicators */
 .status-dot {
   @apply relative inline-flex h-2 w-2 rounded-full;
 }
@@ -172,7 +161,6 @@
   @apply bg-red-400;
 }
 
-/* Flash animations */
 @keyframes flash {
   0%, 100% {
     opacity: 1;
@@ -186,7 +174,6 @@
   animation: flash 0.5s ease-in-out;
 }
 
-/* Pulsing border */
 .pulse-border {
   animation: pulseBorder 2s ease-in-out infinite;
 }
@@ -206,7 +193,6 @@
   }
 }
 
-/* Profit/Loss colors */
 .text-profit {
   @apply text-green-400;
 }
@@ -215,7 +201,6 @@
   @apply text-red-400;
 }
 
-/* Table row hover effect */
 .hover-row {
   @apply transition-colors duration-150;
 }
@@ -224,19 +209,16 @@
   @apply bg-surface-800/50;
 }
 
-/* Card group */
 .card-group {
   @apply grid gap-4;
 }
 
-/* Responsive adjustments */
 @media (max-width: 768px) {
   .card-group {
     @apply gap-3;
   }
 }
 
-/* Print styles */
 @media print {
   .no-print {
     display: none;
