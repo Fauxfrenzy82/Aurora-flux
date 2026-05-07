@@ -10,7 +10,6 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Aurora Flux brand colors
         aurora: {
           50: '#f0fdf4',
           100: '#dcfce7',
@@ -24,7 +23,6 @@ const config: Config = {
           900: '#14532d',
           950: '#052e16',
         },
-        // Regime colors
         regime: {
           trending_up: '#22c55e',
           trending_down: '#ef4444',
@@ -34,13 +32,10 @@ const config: Config = {
           risk_off: '#dc2626',
           uncertain: '#9ca3af',
         },
-        // Direction colors
         long: '#22c55e',
         short: '#ef4444',
-        // Mode colors
         phase: '#3b82f6',
         freedom: '#f59e0b',
-        // Chart colors
         chart: {
           equity: '#22c55e',
           drawdown: '#ef4444',
@@ -49,11 +44,14 @@ const config: Config = {
           grid: '#1f2937',
           text: '#9ca3af',
         },
-        // Surface colors (dark theme)
         surface: {
           50: '#f9fafb',
           100: '#f3f4f6',
           200: '#e5e7eb',
+          300: '#d1d5db',
+          400: '#9ca3af',
+          500: '#6b7280',
+          600: '#4b5563',
           700: '#374151',
           800: '#1f2937',
           850: '#1a2332',
