@@ -98,7 +98,6 @@ class DerivClient:
             logger.info(f"OTP response status: {response.status_code}")
             if response.status_code == 200:
                 resp_json = response.json()
-                # The URL is nested inside a "data" key in the response: {"data": {"url": "wss://..."}}
                 inner_data = resp_json.get("data", {})
                 ws_url = inner_data.get("url") or inner_data.get("websocket_url")
                 if ws_url:
@@ -140,11 +139,14 @@ class DerivClient:
                 logger.info("Deriv WebSocket connected and authenticated via OTP")
                 await asyncio.sleep(0.5)
                 try:
-                    balance_resp = await self._send({"balance": 1, "account": "all"})
+                    balance_resp = await self._send({"balance": 1})
                     if balance_resp.get("balance"):
                         b = balance_resp["balance"]
-                        self._balance = float(b.get("balance", 0))
-                        self._currency = b.get("currency", "USD")
+                        if isinstance(b, dict):
+                            self._balance = float(b.get("balance", 10000.0))
+                            self._currency = b.get("currency", "USD")
+                        else:
+                            self._balance = float(b)
                         logger.info(f"Deriv balance: {self._balance} {self._currency}")
                     elif balance_resp.get("error"):
                         logger.warning(f"Balance check warning: {balance_resp['error']}")
