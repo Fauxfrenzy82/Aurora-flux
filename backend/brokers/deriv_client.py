@@ -132,12 +132,13 @@ class DerivClient:
             
             if response.status_code == 200:
                 data = response.json()
-                ws_url = data.get("websocket_url")
+                # Deriv returns either "websocket_url" or "url" depending on API version
+                ws_url = data.get("websocket_url") or data.get("url")
                 if ws_url:
                     logger.info("Successfully obtained OTP WebSocket URL")
                     return ws_url
                 else:
-                    logger.error(f"OTP response missing 'websocket_url'. Response: {json.dumps(data)[:500]}")
+                    logger.error(f"OTP response missing URL field. Response: {json.dumps(data)[:500]}")
                     return None
                     
             elif response.status_code == 404:
