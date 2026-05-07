@@ -16,6 +16,8 @@ import {
   DollarSign,
 } from 'lucide-react';
 
+type SeverityLevel = 'safe' | 'warning' | 'danger' | 'critical';
+
 export function RiskGauges() {
   const {
     drawdownPct,
@@ -28,7 +30,7 @@ export function RiskGauges() {
     halted,
   } = useSystemStore();
 
-  const drawdownSeverity =
+  const drawdownSeverity: SeverityLevel =
     maxDrawdownPct > 0
       ? drawdownPct / maxDrawdownPct > 0.9
         ? 'critical'
@@ -39,7 +41,7 @@ export function RiskGauges() {
             : 'safe'
       : 'safe';
 
-  const exposureSeverity =
+  const exposureSeverity: SeverityLevel =
     totalExposurePct > 45
       ? 'critical'
       : totalExposurePct > 35
@@ -48,14 +50,14 @@ export function RiskGauges() {
           ? 'warning'
           : 'safe';
 
-  const drawdownVariant =
+  const drawdownVariant: 'success' | 'warning' | 'danger' =
     drawdownSeverity === 'safe'
       ? 'success'
       : drawdownSeverity === 'warning'
         ? 'warning'
         : 'danger';
 
-  const exposureVariant =
+  const exposureVariant: 'success' | 'warning' | 'danger' =
     exposureSeverity === 'safe'
       ? 'success'
       : exposureSeverity === 'warning'
@@ -84,7 +86,6 @@ export function RiskGauges() {
 
       <CardContent>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Drawdown Gauge */}
           <GaugeCard
             icon={<TrendingDown className="h-5 w-5" />}
             label="Drawdown"
@@ -96,7 +97,6 @@ export function RiskGauges() {
             warning={drawdownSeverity === 'critical' ? 'Approaching max drawdown' : undefined}
           />
 
-          {/* Exposure Gauge */}
           <GaugeCard
             icon={<Target className="h-5 w-5" />}
             label="Exposure"
@@ -107,42 +107,29 @@ export function RiskGauges() {
             severity={exposureSeverity}
           />
 
-          {/* Risk of Ruin */}
           <GaugeCard
             icon={<AlertTriangle className="h-5 w-5" />}
             label="Risk of Ruin"
-            value={
-              riskOfRuin < 0.0001
-                ? '< 0.01%'
-                : formatPercent(riskOfRuin)
-            }
+            value={riskOfRuin < 0.0001 ? '< 0.01%' : formatPercent(riskOfRuin)}
             subValue={riskOfRuin < 0.001 ? 'Safe' : 'Elevated'}
             progress={Math.min(100, riskOfRuin * 1000)}
             variant={riskOfRuin < 0.001 ? 'success' : 'warning'}
             severity={riskOfRuin < 0.001 ? 'safe' : 'warning'}
           />
 
-          {/* Daily P&L */}
           <GaugeCard
             icon={<DollarSign className="h-5 w-5" />}
             label="Daily P&L"
             value={formatCurrency(dailyPnL)}
-            subValue={
-              balance > 0
-                ? `${(dailyPnL / balance * 100).toFixed(2)}% of balance`
-                : 'N/A'
-            }
+            subValue={balance > 0 ? `${(dailyPnL / balance * 100).toFixed(2)}% of balance` : 'N/A'}
             progress={Math.min(100, Math.abs(dailyPnL) / Math.max(balance, 0.01) * 500)}
             variant={dailyPnL >= 0 ? 'success' : 'danger'}
             severity={dailyPnL >= 0 ? 'safe' : 'warning'}
           />
         </div>
 
-        {/* Constraint Viewer */}
         <div className="mt-4 p-3 bg-surface-700/50 rounded-lg">
-          <h4 className="text-xs font-semibold text-gray-400 uppercase mb-2">
-            Active Constraints
-          </h4>
+          <h4 className="text-xs font-semibold text-gray-400 uppercase mb-2">Active Constraints</h4>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
             <ConstraintBadge label="Max Risk" active={true} />
             <ConstraintBadge label="Daily Cap" active={true} />
@@ -175,10 +162,10 @@ function GaugeCard({
   subValue: string;
   progress: number;
   variant: 'success' | 'warning' | 'danger';
-  severity: string;
+  severity: SeverityLevel;
   warning?: string;
 }) {
-  const severityColors = {
+  const severityColors: Record<SeverityLevel, string> = {
     safe: 'text-green-400',
     warning: 'text-yellow-400',
     danger: 'text-orange-400',
@@ -188,44 +175,23 @@ function GaugeCard({
   return (
     <div className="p-3 bg-surface-700/50 rounded-lg">
       <div className="flex items-center gap-2 mb-2">
-        <span className={cn(severityColors[severity] || 'text-gray-400')}>
+        <span className={cn(severityColors[severity])}>
           {icon}
         </span>
         <span className="text-xs text-gray-400 uppercase">{label}</span>
       </div>
       <p className="text-lg font-mono font-bold text-white mb-1">{value}</p>
-      <Progress
-        value={Math.min(100, progress)}
-        variant={variant}
-        size="sm"
-        showLabel={false}
-      />
+      <Progress value={Math.min(100, progress)} variant={variant} size="sm" showLabel={false} />
       <p className="text-xs text-gray-500 mt-1">{subValue}</p>
-      {warning && (
-        <p className="text-xs text-red-400 mt-1 font-medium">{warning}</p>
-      )}
+      {warning && <p className="text-xs text-red-400 mt-1 font-medium">{warning}</p>}
     </div>
   );
 }
 
-function ConstraintBadge({
-  label,
-  active,
-}: {
-  label: string;
-  active: boolean;
-}) {
+function ConstraintBadge({ label, active }: { label: string; active: boolean }) {
   return (
-    <span
-      className={cn(
-        'px-2 py-1 rounded-md font-medium text-center',
-        active
-          ? 'bg-aurora-600/20 text-aurora-400 border border-aurora-600/30'
-          : 'bg-surface-700 text-gray-500'
-      )}
-    >
-      {label}
-      {active && ' ✓'}
+    <span className={cn('px-2 py-1 rounded-md font-medium text-center', active ? 'bg-aurora-600/20 text-aurora-400 border border-aurora-600/30' : 'bg-surface-700 text-gray-500')}>
+      {label}{active && ' ✓'}
     </span>
   );
 }
