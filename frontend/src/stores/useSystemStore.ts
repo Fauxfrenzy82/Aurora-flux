@@ -72,6 +72,7 @@ interface SystemState {
   isRefreshing: boolean;
   selectedStrategy: Strategy | null;
   activeRoute: string;
+  uptimeSeconds: number;
 
   // ── Actions ─────────────────────────────────────
   setConnected: (connected: boolean) => void;
@@ -135,6 +136,7 @@ const initialState = {
   isRefreshing: false,
   selectedStrategy: null,
   activeRoute: '/',
+  uptimeSeconds: 0,
 };
 
 export const useSystemStore = create<SystemState>((set, get) => ({
@@ -162,6 +164,7 @@ export const useSystemStore = create<SystemState>((set, get) => ({
       scalpModeActive: status.scalp_active || false,
       isConnected: status.connected,
       lastUpdate: status.last_update || new Date().toISOString(),
+      uptimeSeconds: status.uptime_seconds || 0,
       governance: status.governance
         ? {
             halted: status.governance.halted,
@@ -255,7 +258,6 @@ export const useSystemStore = create<SystemState>((set, get) => ({
 let wsUnsubscribers: (() => void)[] = [];
 
 export function initWebSocketStore(): void {
-  // Clean up previous subscriptions
   wsUnsubscribers.forEach((unsub) => unsub());
   wsUnsubscribers = [];
 
@@ -322,7 +324,6 @@ export function initWebSocketStore(): void {
 
     ws.on('error_alert', (data) => {
       setState({ error: (data.message as string) || 'Unknown error' });
-      // Auto-clear error after 10 seconds
       setTimeout(() => setState({ error: null }), 10000);
     }),
 
@@ -332,6 +333,5 @@ export function initWebSocketStore(): void {
     })
   );
 
-  // Connect WebSocket
   ws.connect();
 }
