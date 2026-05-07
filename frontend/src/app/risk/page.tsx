@@ -6,7 +6,7 @@ import { RiskGauges } from '@/components/RiskGauges';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { formatCurrency, formatPercent } from '@/lib/utils';
+import { cn,formatCurrency, formatPercent } from '@/lib/utils';
 import {
   Shield,
   Target,
