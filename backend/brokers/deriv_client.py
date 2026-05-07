@@ -323,4 +323,4 @@ class DerivClient:
                 "authorized": self.authorized, "balance": self._balance}
 
 
-deriv = DerivClient()
+deriv = DerivClient() 
