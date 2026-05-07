@@ -67,15 +67,22 @@ class AuroraFlux:
             if not strategies or len(strategies) < 10:
                 logger.info("Generating seed strategies...")
                 seeds = generate_seeds(250)
-                strategies = [s.to_dict() for s in seeds]
-                for s in strategies:
-                    s["status"] = "TESTING"
-                    s["generation"] = 0
-                    s["birth_type"] = "SEED"
-                    s["profit_factor"] = 0.0
-                    s["win_rate"] = 0.0
-                    s["total_trades"] = 0
-                    await db.save_strategy(s)
+                strategies = []
+                for seed in seeds:
+                    dna_dict = seed.to_dict()
+                    strategy_record = {
+                        "strategy_id": dna_dict.get("strategy_id", seed.strategy_id),
+                        "strategy_name": dna_dict.get("strategy_name", seed.name),
+                        "status": "TESTING",
+                        "generation": 0,
+                        "birth_type": "SEED",
+                        "profit_factor": 0.0,
+                        "win_rate": 0.0,
+                        "total_trades": 0,
+                        "dna": dna_dict
+                    }
+                    strategies.append(strategy_record)
+                    await db.save_strategy(strategy_record)
                 logger.info(f"Generated {len(strategies)} seed strategies")
 
             self.manager.load(strategies)
