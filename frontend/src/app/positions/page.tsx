@@ -5,7 +5,7 @@ import { useSystemStore } from '@/stores/useSystemStore';
 import { PositionCard } from '@/components/PositionCard';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { formatCurrency, formatPercent } from '@/lib/utils';
+import { cn, formatCurrency, formatPercent } from '@/lib/utils';
 import { Layers, TrendingUp, TrendingDown, DollarSign, AlertCircle } from 'lucide-react';
 
 export default function PositionsPage() {
