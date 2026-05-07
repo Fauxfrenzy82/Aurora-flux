@@ -30,7 +30,7 @@ class Config:
     INITIAL_CAPITAL: float = float(os.getenv("INITIAL_CAPITAL", "10.0"))
 
     # Trading Mode
-    MODE: str = os.getenv("MODE", "PHASE")  # PHASE or FREEDOM
+    MODE: str = os.getenv("MODE", "PHASE")
 
     # Risk Management
     BASE_RISK_PCT: float = float(os.getenv("BASE_RISK_PCT", "2.0"))
@@ -50,16 +50,18 @@ class Config:
     KELLY_FRACTION_PHASE: float = 0.25
     KELLY_FRACTION_FREEDOM: float = 1.0
 
-    # Trading Universe
+    # Trading Universe — Deriv Options compatible symbols
     TRADING_PAIRS: List[str] = [
-        "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
-        "AUDUSD", "USDCAD", "NZDUSD",
-        "EURGBP", "EURJPY", "GBPJPY",
-        "EURCHF", "GBPCHF", "AUDJPY"
+        "frxEURUSD", "frxGBPUSD", "frxUSDJPY", "frxUSDCHF",
+        "frxAUDUSD", "frxUSDCAD", "frxNZDUSD",
+        "frxEURGBP", "frxEURJPY", "frxGBPJPY",
+        "frxEURCHF", "frxGBPCHF", "frxAUDJPY",
+        "R_10", "R_25", "R_50", "R_75", "R_100",
+        "1HZ10V", "1HZ25V", "1HZ50V", "1HZ75V", "1HZ100V",
     ]
 
     JPY_PAIRS: List[str] = [
-        "USDJPY", "EURJPY", "GBPJPY", "AUDJPY"
+        "frxUSDJPY", "frxEURJPY", "frxGBPJPY", "frxAUDJPY"
     ]
 
     # Trading Sessions (UTC hours)
@@ -72,7 +74,6 @@ class Config:
 
     @classmethod
     def validate(cls) -> bool:
-        """Validate that all required configuration is present."""
         required = [
             "SUPABASE_URL",
             "SUPABASE_SERVICE_ROLE_KEY",
@@ -81,26 +82,21 @@ class Config:
         ]
         missing = [key for key in required if not getattr(cls, key)]
         if missing:
-            raise ValueError(
-                f"Missing required configuration: {', '.join(missing)}"
-            )
+            raise ValueError(f"Missing required configuration: {', '.join(missing)}")
         return True
 
     @classmethod
     def pip_size(cls, symbol: str) -> float:
-        """Return pip size for a given symbol."""
         if any(jpy in symbol.upper() for jpy in cls.JPY_PAIRS):
             return 0.01
         return 0.0001
 
     @classmethod
     def is_jpy_pair(cls, symbol: str) -> bool:
-        """Check if symbol is a JPY pair."""
         return any(jpy in symbol.upper() for jpy in cls.JPY_PAIRS)
 
     @classmethod
     def get_session(cls, hour: int) -> str:
-        """Get trading session name for a given UTC hour."""
         for session_name, (start, end) in cls.SESSIONS.items():
             if start <= hour < end:
                 return session_name
@@ -108,7 +104,6 @@ class Config:
 
     @classmethod
     def to_dict(cls) -> dict:
-        """Export configuration as dictionary (secrets masked)."""
         return {
             "broker": cls.BROKER,
             "account_type": cls.ACCOUNT_TYPE,
@@ -122,9 +117,7 @@ class Config:
             "max_exposure_pct": cls.MAX_EXPOSURE_PCT,
             "phase_duration_days": cls.PHASE_DURATION_DAYS,
             "kelly_fraction": (
-                cls.KELLY_FRACTION_PHASE
-                if cls.MODE == "PHASE"
-                else cls.KELLY_FRACTION_FREEDOM
+                cls.KELLY_FRACTION_PHASE if cls.MODE == "PHASE" else cls.KELLY_FRACTION_FREEDOM
             ),
             "trading_pairs": cls.TRADING_PAIRS,
             "jpy_pairs": cls.JPY_PAIRS,
@@ -132,5 +125,4 @@ class Config:
         }
 
 
-# Singleton instance
 config = Config()
