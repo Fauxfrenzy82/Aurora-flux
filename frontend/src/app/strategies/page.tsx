@@ -1,5 +1,6 @@
 'use client';
 
+import { cn } from '@/lib/utils';
 import React from 'react';
 import { useSystemStore } from '@/stores/useSystemStore';
 import { StrategyTable } from '@/components/StrategyTable';
