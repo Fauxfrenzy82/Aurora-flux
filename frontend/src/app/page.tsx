@@ -21,6 +21,7 @@ import {
   AlertCircle,
   RefreshCw,
   ChevronRight,
+  Zap,
 } from 'lucide-react';
 
 export default function Dashboard() {
