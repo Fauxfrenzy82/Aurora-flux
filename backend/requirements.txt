@@ -13,6 +13,6 @@ pykalman>=0.9.5
 PyWavelets>=1.4.0
 httpx>=0.25.0
 python-dotenv>=1.0.0
-deriv-api
+
 httpx>=0.25.0
 python-deriv-api>=1.0.0
