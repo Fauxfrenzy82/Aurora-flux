@@ -2,6 +2,7 @@
 Deriv WebSocket client — free broker bridge for Aurora Flux.
 Connects directly to Deriv API using OTP authentication.
 Automatically creates an Options demo account if one is not found.
+Features auto-reconnection on WebSocket drops.
 """
 
 import asyncio
@@ -18,7 +19,7 @@ logger = get_logger("deriv")
 
 
 class DerivClient:
-    """Direct WebSocket client for Deriv API."""
+    """Direct WebSocket client for Deriv API with auto-reconnection."""
 
     REST_API_BASE = "https://api.derivws.com"
 
@@ -38,6 +39,7 @@ class DerivClient:
         self._balance = 0.0
         self._currency = "USD"
         self._lock = asyncio.Lock()
+        self._listen_task = None
 
     async def _ensure_options_account(self) -> bool:
         headers = {
@@ -124,7 +126,7 @@ class DerivClient:
 
     async def connect(self) -> bool:
         async with self._lock:
-            if self.connected:
+            if self.connected and self.ws:
                 return True
             try:
                 ws_url = await self._get_otp_websocket_url()
@@ -134,7 +136,7 @@ class DerivClient:
                 logger.info("Connecting to Deriv with OTP WebSocket URL...")
                 self.ws = await websockets.connect(ws_url, ping_interval=20)
                 self.connected = True
-                asyncio.create_task(self._listen())
+                self._listen_task = asyncio.create_task(self._listen())
                 self.authorized = True
                 logger.info("Deriv WebSocket connected and authenticated via OTP")
                 await asyncio.sleep(0.5)
@@ -165,24 +167,60 @@ class DerivClient:
                 return False
 
     async def _listen(self):
-        try:
-            async for msg in self.ws:
-                data = json.loads(msg)
-                req_id = data.get("req_id")
-                if req_id and req_id in self._pending:
-                    self._pending.pop(req_id).set_result(data)
-        except Exception as e:
-            logger.error(f"Deriv listen error: {type(e).__name__}: {e}")
+        """Listen for incoming WebSocket messages. Auto-reconnects on disconnect."""
+        while True:
+            try:
+                if not self.ws:
+                    await asyncio.sleep(5)
+                    continue
+                async for msg in self.ws:
+                    try:
+                        data = json.loads(msg)
+                        req_id = data.get("req_id")
+                        if req_id and req_id in self._pending:
+                            self._pending.pop(req_id).set_result(data)
+                    except json.JSONDecodeError:
+                        continue
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning("Deriv WebSocket closed. Reconnecting in 5s...")
+            except Exception as e:
+                logger.warning(f"Deriv listen error: {type(e).__name__}: {e}. Reconnecting in 5s...")
+            
             self.connected = False
+            self.ws = None
+            await asyncio.sleep(5)
+            
+            for attempt in range(1, self.MAX_RECONNECT_ATTEMPTS + 1):
+                logger.info(f"Reconnection attempt {attempt}/{self.MAX_RECONNECT_ATTEMPTS}...")
+                try:
+                    if await self.connect():
+                        logger.info("Deriv reconnected successfully")
+                        return
+                except Exception as e:
+                    logger.warning(f"Reconnection attempt {attempt} failed: {e}")
+                
+                delay = min(self.RECONNECT_BASE_DELAY * (2 ** (attempt - 1)), self.RECONNECT_MAX_DELAY)
+                await asyncio.sleep(delay)
+            
+            logger.error("Max reconnection attempts reached. Will retry in 60s.")
+            await asyncio.sleep(60)
 
     async def _send(self, msg: dict, timeout: float = 15) -> dict:
-        if not self.connected:
-            raise Exception("Not connected")
+        if not self.connected or not self.ws:
+            logger.warning("WebSocket not connected, attempting reconnect...")
+            await self.connect()
+            if not self.connected or not self.ws:
+                raise Exception("Not connected — reconnection failed")
         self._req_id += 1
         msg["req_id"] = self._req_id
         future = asyncio.get_event_loop().create_future()
         self._pending[self._req_id] = future
-        await self.ws.send(json.dumps(msg))
+        try:
+            await self.ws.send(json.dumps(msg))
+        except Exception:
+            self.connected = False
+            self.ws = None
+            raise Exception("WebSocket send failed — connection lost")
         return await asyncio.wait_for(future, timeout=timeout)
 
     async def get_price(self, symbol: str) -> Tuple[Optional[float], Optional[float]]:
@@ -316,6 +354,12 @@ class DerivClient:
         return "ASIAN"
 
     async def disconnect(self):
+        if self._listen_task:
+            self._listen_task.cancel()
+            try:
+                await self._listen_task
+            except asyncio.CancelledError:
+                pass
         if self.ws:
             await self.ws.close()
         self.connected = False
