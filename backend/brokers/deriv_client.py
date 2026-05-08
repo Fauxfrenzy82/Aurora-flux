@@ -1,8 +1,7 @@
 """
 Deriv WebSocket client — free broker bridge for Aurora Flux.
 Connects directly to Deriv API using OTP authentication.
-Automatically creates an Options demo account if one is not found.
-Features auto-reconnection on WebSocket drops.
+Features keep-alive pings and exponential backoff retry.
 """
 
 import asyncio
@@ -19,13 +18,12 @@ logger = get_logger("deriv")
 
 
 class DerivClient:
-    """Direct WebSocket client for Deriv API with auto-reconnection."""
+    """Direct WebSocket client for Deriv API with keep-alive and retry."""
 
     REST_API_BASE = "https://api.derivws.com"
-
-    MAX_RECONNECT_ATTEMPTS = 20
-    RECONNECT_BASE_DELAY = 2.0
-    RECONNECT_MAX_DELAY = 60.0
+    PING_INTERVAL = 20
+    MAX_RETRIES = 3
+    RETRY_DELAY = 5
 
     def __init__(self):
         self.app_id = getattr(config, 'DERIV_APP_ID', '')
@@ -39,7 +37,8 @@ class DerivClient:
         self._balance = 0.0
         self._currency = "USD"
         self._lock = asyncio.Lock()
-        self._listen_task = None
+        self._last_ping = 0
+        self._keepalive_task = None
 
     async def _ensure_options_account(self) -> bool:
         headers = {
@@ -85,7 +84,6 @@ class DerivClient:
         if not await self._ensure_options_account():
             logger.error("Could not obtain or create an Options account. Aborting.")
             return None
-
         otp_path = f"/trading/v1/options/accounts/{self.deriv_login}/otp"
         url = self.REST_API_BASE + otp_path
         headers = {
@@ -134,10 +132,12 @@ class DerivClient:
                     logger.error("Could not obtain OTP URL. Aborting connection.")
                     return False
                 logger.info("Connecting to Deriv with OTP WebSocket URL...")
-                self.ws = await websockets.connect(ws_url, ping_interval=20)
+                self.ws = await websockets.connect(ws_url, ping_interval=self.PING_INTERVAL)
                 self.connected = True
-                self._listen_task = asyncio.create_task(self._listen())
                 self.authorized = True
+                self._last_ping = time.monotonic()
+                self._keepalive_task = asyncio.create_task(self._keepalive())
+                self._listen_task = asyncio.create_task(self._listen_loop())
                 logger.info("Deriv WebSocket connected and authenticated via OTP")
                 await asyncio.sleep(0.5)
                 try:
@@ -157,21 +157,28 @@ class DerivClient:
                     logger.warning(f"Balance check failed (non-critical): {e}")
                     self._balance = 10000.0
                 return True
-            except websockets.exceptions.InvalidStatus as e:
-                logger.error(f"WebSocket rejected: HTTP {e.response.status_code}")
-                self.connected = False
-                return False
             except Exception as e:
                 logger.error(f"Deriv connection failed: {type(e).__name__}: {e}")
                 self.connected = False
                 return False
 
-    async def _listen(self):
-        """Listen for incoming WebSocket messages. Auto-reconnects on disconnect."""
+    async def _keepalive(self):
+        """Send periodic pings to keep the WebSocket alive."""
+        while self.connected and self.ws:
+            try:
+                await asyncio.sleep(self.PING_INTERVAL)
+                if self.ws:
+                    pong = await self.ws.ping()
+                    self._last_ping = time.monotonic()
+            except Exception:
+                break
+
+    async def _listen_loop(self):
+        """Listen for incoming messages. Triggers reconnect on failure."""
         while True:
             try:
                 if not self.ws:
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(2)
                     continue
                 async for msg in self.ws:
                     try:
@@ -182,46 +189,51 @@ class DerivClient:
                     except json.JSONDecodeError:
                         continue
             except websockets.exceptions.ConnectionClosed:
-                logger.warning("Deriv WebSocket closed. Reconnecting in 5s...")
+                logger.warning("Deriv WebSocket closed by server. Reconnecting...")
             except Exception as e:
-                logger.warning(f"Deriv listen error: {type(e).__name__}: {e}. Reconnecting in 5s...")
+                logger.warning(f"Deriv listen error: {type(e).__name__}: {e}. Reconnecting...")
             
             self.connected = False
             self.ws = None
-            await asyncio.sleep(5)
             
-            for attempt in range(1, self.MAX_RECONNECT_ATTEMPTS + 1):
-                logger.info(f"Reconnection attempt {attempt}/{self.MAX_RECONNECT_ATTEMPTS}...")
+            for attempt in range(1, 11):
+                logger.info(f"Reconnect attempt {attempt}/10...")
                 try:
                     if await self.connect():
-                        logger.info("Deriv reconnected successfully")
-                        return
+                        logger.info("Reconnected successfully")
+                        break
                 except Exception as e:
-                    logger.warning(f"Reconnection attempt {attempt} failed: {e}")
-                
-                delay = min(self.RECONNECT_BASE_DELAY * (2 ** (attempt - 1)), self.RECONNECT_MAX_DELAY)
-                await asyncio.sleep(delay)
-            
-            logger.error("Max reconnection attempts reached. Will retry in 60s.")
-            await asyncio.sleep(60)
+                    logger.warning(f"Attempt {attempt} failed: {e}")
+                await asyncio.sleep(min(5 * attempt, 30))
+            else:
+                logger.error("All reconnect attempts failed. Waiting 60s...")
+                await asyncio.sleep(60)
 
     async def _send(self, msg: dict, timeout: float = 15) -> dict:
-        if not self.connected or not self.ws:
-            logger.warning("WebSocket not connected, attempting reconnect...")
-            await self.connect()
+        """Send a message with retry logic."""
+        last_error = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
             if not self.connected or not self.ws:
-                raise Exception("Not connected — reconnection failed")
-        self._req_id += 1
-        msg["req_id"] = self._req_id
-        future = asyncio.get_event_loop().create_future()
-        self._pending[self._req_id] = future
-        try:
-            await self.ws.send(json.dumps(msg))
-        except Exception:
-            self.connected = False
-            self.ws = None
-            raise Exception("WebSocket send failed — connection lost")
-        return await asyncio.wait_for(future, timeout=timeout)
+                if attempt < self.MAX_RETRIES:
+                    logger.debug(f"Not connected, waiting for reconnect (attempt {attempt})...")
+                    await asyncio.sleep(self.RETRY_DELAY)
+                    continue
+                raise Exception("Not connected after retries")
+            try:
+                self._req_id += 1
+                msg["req_id"] = self._req_id
+                future = asyncio.get_event_loop().create_future()
+                self._pending[self._req_id] = future
+                await self.ws.send(json.dumps(msg))
+                return await asyncio.wait_for(future, timeout=timeout)
+            except Exception as e:
+                last_error = e
+                self.connected = False
+                self.ws = None
+                if attempt < self.MAX_RETRIES:
+                    logger.debug(f"Send failed (attempt {attempt}): {e}. Retrying...")
+                    await asyncio.sleep(self.RETRY_DELAY)
+        raise Exception(f"Send failed after {self.MAX_RETRIES} attempts: {last_error}")
 
     async def get_price(self, symbol: str) -> Tuple[Optional[float], Optional[float]]:
         try:
@@ -257,7 +269,7 @@ class DerivClient:
                 })
             return result
         except Exception as e:
-            logger.error(f"Candles error: {e}")
+            logger.debug(f"Candles unavailable for {symbol}: {e}")
             return []
 
     @staticmethod
@@ -354,12 +366,10 @@ class DerivClient:
         return "ASIAN"
 
     async def disconnect(self):
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
         if self._listen_task:
             self._listen_task.cancel()
-            try:
-                await self._listen_task
-            except asyncio.CancelledError:
-                pass
         if self.ws:
             await self.ws.close()
         self.connected = False
