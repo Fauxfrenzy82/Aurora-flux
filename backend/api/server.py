@@ -28,8 +28,6 @@ from core.logger import get_logger
 
 logger = get_logger("api")
 
-# ── FastAPI App ─────────────────────────────────────────
-
 app = FastAPI(
     title="Aurora Flux API",
     description="Autonomous Forex Trading System",
@@ -38,7 +36,6 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS — allow all origins for development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,8 +43,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ── Global State ────────────────────────────────────────
 
 governance = Governance()
 active_websockets: List[WebSocket] = []
@@ -73,21 +68,15 @@ current_state: dict = {
 _start_time = datetime.now(timezone.utc)
 
 
-# ── Startup / Shutdown ──────────────────────────────────
-
 @app.on_event("startup")
 async def startup():
-    """Initialize API server."""
     logger.info("Starting Aurora Flux API server...")
-
-    # Validate configuration
     try:
         config.validate()
     except ValueError as e:
         logger.critical(f"Configuration error: {e}")
         raise
 
-    # Connect to broker
     connected = await deriv.connect()
     current_state["connected"] = connected
 
@@ -96,72 +85,45 @@ async def startup():
         current_state["equity"] = acc_info.get("equity", config.INITIAL_CAPITAL)
         current_state["balance"] = acc_info.get("balance", config.INITIAL_CAPITAL)
         current_state["mode"] = config.MODE
-
-        logger.info(
-            f"API ready | Equity: ${current_state['equity']:.2f} | "
-            f"Mode: {current_state['mode']}"
-        )
-
-        # Record startup
-        await db.save_event(
-            "API_STARTUP",
-            "FastAPI server started",
-            {"equity": current_state["equity"]}
-        )
+        logger.info(f"API ready | Equity: ${current_state['equity']:.2f} | Mode: {current_state['mode']}")
+        await db.save_event("API_STARTUP", "FastAPI server started", {"equity": current_state["equity"]})
     else:
         logger.warning("API started but broker not connected")
 
-    # Start background state updater
     asyncio.create_task(_state_updater())
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    """Graceful shutdown."""
     logger.info("Shutting down API server...")
     await db.save_event("API_SHUTDOWN", "FastAPI server stopping", {})
     await deriv.disconnect()
 
 
-# ── Background State Updater ────────────────────────────
-
 async def _state_updater():
-    """Update current state every 5 seconds."""
     while True:
         try:
-            current_state["uptime_seconds"] = (
-                datetime.now(timezone.utc) - _start_time
-            ).total_seconds()
-
+            current_state["uptime_seconds"] = (datetime.now(timezone.utc) - _start_time).total_seconds()
             if current_state.get("connected"):
                 acc_info = await deriv.get_account_info()
                 if acc_info:
                     current_state["equity"] = acc_info.get("equity", current_state["equity"])
                     current_state["balance"] = acc_info.get("balance", current_state["balance"])
-
                 current_state["positions"] = await get_open_positions()
                 current_state["session"] = deriv.detect_session()
                 current_state["halted"] = governance.halted
-
-                # Calculate drawdown
                 balance = current_state.get("balance", 1)
                 equity = current_state.get("equity", 1)
                 if balance > 0:
                     current_state["drawdown"] = max(0, (balance - equity) / balance)
-
                 current_state["last_update"] = datetime.now(timezone.utc).isoformat()
-
         except Exception as e:
             logger.error(f"State updater error: {e}")
-
         await asyncio.sleep(5)
 
 
-# ── REST Endpoints ──────────────────────────────────────
-
 @app.get("/")
 async def root():
-    """API root — health check."""
     return {
         "name": "Aurora Flux API",
         "version": "1.0.0",
@@ -172,19 +134,13 @@ async def root():
 
 @app.get("/api/status")
 async def get_status():
-    """Get comprehensive system status."""
-    return JSONResponse({
-        **current_state,
-        "governance": governance.get_stats(),
-    })
+    return JSONResponse({**current_state, "governance": governance.get_stats()})
 
 
 @app.get("/api/health")
 async def health_check():
-    """Health check endpoint."""
     broker_health = await deriv.health_check()
     db_health = await db.health_check()
-
     return {
         "status": "healthy" if (broker_health.get("status") == "connected") else "degraded",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -195,13 +151,11 @@ async def health_check():
 
 @app.get("/api/positions")
 async def get_positions():
-    """Get all open positions."""
     return await get_open_positions()
 
 
 @app.get("/api/positions/count")
 async def get_position_count():
-    """Get count of open positions."""
     from execution.orders import get_position_count as gpc
     return {"count": await gpc()}
 
@@ -213,100 +167,61 @@ async def get_trades(
     strategy: Optional[str] = None,
     result: Optional[str] = None,
 ):
-    """Get recent trades with optional filters."""
-    return await db.get_trades(
-        limit=limit,
-        symbol=symbol,
-        strategy=strategy,
-        result=result,
-    )
+    return await db.get_trades(limit=limit, symbol=symbol, strategy=strategy, result=result)
 
 
 @app.get("/api/trades/stats")
 async def get_trade_stats(days: int = Query(30, ge=1, le=365)):
-    """Get trade statistics for a period."""
     trades = await db.get_trades(limit=10000)
-    # Filter by days
-    cutoff = datetime.now(timezone.utc)
     from datetime import timedelta
-    cutoff = cutoff - timedelta(days=days)
-
-    filtered = []
-    for t in trades:
-        created = t.get("created_at", "")
-        if created and created > cutoff.isoformat():
-            filtered.append(t)
-
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    filtered = [t for t in trades if t.get("created_at", "") and t.get("created_at", "") > cutoff.isoformat()]
     wins = [t for t in filtered if t.get("result") == "WIN"]
     losses = [t for t in filtered if t.get("result") == "LOSS"]
     total = len(filtered)
     gross_profit = sum(t.get("profit_currency", 0) or 0 for t in wins)
     gross_loss = abs(sum(t.get("profit_currency", 0) or 0 for t in losses))
-
     return {
-        "period_days": days,
-        "total_trades": total,
-        "wins": len(wins),
-        "losses": len(losses),
+        "period_days": days, "total_trades": total, "wins": len(wins), "losses": len(losses),
         "win_rate": len(wins) / total if total > 0 else 0,
-        "gross_profit": round(gross_profit, 2),
-        "gross_loss": round(gross_loss, 2),
+        "gross_profit": round(gross_profit, 2), "gross_loss": round(gross_loss, 2),
         "net_pnl": round(gross_profit - gross_loss, 2),
-        "profit_factor": round(
-            gross_profit / gross_loss if gross_loss > 0 else (999 if gross_profit > 0 else 0),
-            2
-        ),
+        "profit_factor": round(gross_profit / gross_loss if gross_loss > 0 else (999 if gross_profit > 0 else 0), 2),
     }
 
 
 @app.get("/api/strategies")
-async def get_strategies(
-    status: Optional[str] = None,
-    min_trades: Optional[int] = None,
-):
-    """Get strategies with optional filters."""
+async def get_strategies(status: Optional[str] = None, min_trades: Optional[int] = None):
     return await db.get_strategies(status=status, min_trades=min_trades)
 
 
 @app.get("/api/signals")
-async def get_signals(
-    limit: int = Query(50, ge=1, le=200),
-    symbol: Optional[str] = None,
-):
-    """Get recent signals."""
+async def get_signals(limit: int = Query(50, ge=1, le=200), symbol: Optional[str] = None):
     return await db.get_signals(limit=limit, symbol=symbol)
 
 
 @app.get("/api/audit")
-async def get_audit(
-    limit: int = Query(50, ge=1, le=200),
-    event_type: Optional[str] = None,
-):
-    """Get audit trail entries."""
+async def get_audit(limit: int = Query(50, ge=1, le=200), event_type: Optional[str] = None):
     return await db.get_audit(limit=limit, event_type=event_type)
 
 
 @app.get("/api/audit/verify")
 async def verify_audit():
-    """Verify audit chain integrity."""
     return await db.verify_audit_chain()
 
 
 @app.get("/api/regime")
 async def get_regime(pair: str = Query("EURUSD")):
-    """Get latest regime for a pair."""
     return await db.get_latest_regime(pair)
 
 
 @app.get("/api/snapshots")
 async def get_snapshots(limit: int = Query(30, ge=1, le=100)):
-    """Get account snapshots."""
     return await db.get_snapshots(limit=limit)
 
 
 @app.get("/api/performance")
 async def get_performance():
-    """Get performance summary from strategy manager."""
     from main import get_system
     system = await get_system()
     return system.manager.get_performance_summary()
@@ -314,24 +229,106 @@ async def get_performance():
 
 @app.get("/api/evolution")
 async def get_evolution(limit: int = Query(20, ge=1, le=100)):
-    """Get evolution history."""
     return await db.get_evolution_history(limit=limit)
 
 
 @app.get("/api/events")
-async def get_events(
-    limit: int = Query(50, ge=1, le=200),
-    event_type: Optional[str] = None,
-):
-    """Get system events."""
+async def get_events(limit: int = Query(50, ge=1, le=200), event_type: Optional[str] = None):
     return await db.get_events(limit=limit, event_type=event_type)
+
+
+# ── NEW: Detailed Pairs Endpoint ──────────────────────
+
+@app.get("/api/pairs/detailed")
+async def get_detailed_pairs():
+    """Get detailed status for all trading pairs with regime history, signals, and trades."""
+    pairs_data = []
+    for symbol in config.TRADING_PAIRS:
+        regime_data = await db.get_latest_regime(symbol)
+        regime_history = await db.get_regime_history(symbol, limit=5)
+        signals = await db.get_signals(limit=5, symbol=symbol)
+        trades = await db.get_trades(limit=3, symbol=symbol)
+
+        pairs_data.append({
+            "symbol": symbol,
+            "latest_regime": {
+                "regime": regime_data.get("regime", "UNKNOWN") if regime_data else "UNKNOWN",
+                "confidence": regime_data.get("confidence", 0) if regime_data else 0,
+                "timestamp": regime_data.get("created_at") if regime_data else None,
+                "metrics": regime_data.get("metrics", {}) if regime_data else {},
+            },
+            "regime_history": [
+                {"regime": r.get("regime"), "confidence": r.get("confidence"), "timestamp": r.get("created_at")}
+                for r in (regime_history or [])
+            ],
+            "recent_signals": [
+                {"direction": s.get("direction"), "confidence": s.get("confidence"),
+                 "governance": s.get("governance_result"), "timestamp": s.get("created_at")}
+                for s in (signals or [])
+            ],
+            "recent_trades": [
+                {"direction": t.get("direction"), "result": t.get("result"),
+                 "profit_pips": t.get("profit_pips"), "timestamp": t.get("created_at")}
+                for t in (trades or [])
+            ],
+        })
+
+    return JSONResponse({"pairs": pairs_data, "count": len(pairs_data)})
+
+
+# ── NEW: Activity Logs Endpoint ────────────────────────
+
+@app.get("/api/activity/logs")
+async def get_activity_logs(limit: int = Query(50, ge=1, le=200)):
+    """Get combined activity logs from regime history, signals, trades, and events."""
+    regime_logs = await db.get_regime_history(limit=limit)
+    signal_logs = await db.get_signals(limit=limit)
+    trade_logs = await db.get_trades(limit=limit)
+    event_logs = await db.get_events(limit=limit)
+
+    combined = []
+
+    for r in (regime_logs or []):
+        combined.append({
+            "type": "regime",
+            "timestamp": r.get("created_at"),
+            "symbol": r.get("pair"),
+            "data": f"{r.get('regime')} ({round((r.get('confidence') or 0) * 100)}% conf)",
+        })
+
+    for s in (signal_logs or []):
+        combined.append({
+            "type": "signal",
+            "timestamp": s.get("created_at"),
+            "symbol": s.get("symbol"),
+            "data": f"{s.get('direction')} {round((s.get('confidence') or 0) * 100)}% → {s.get('governance_result')}",
+        })
+
+    for t in (trade_logs or []):
+        combined.append({
+            "type": "trade",
+            "timestamp": t.get("created_at"),
+            "symbol": t.get("symbol"),
+            "data": f"{t.get('direction')} {t.get('result') or 'OPEN'} ({t.get('profit_pips')} pips)",
+        })
+
+    for e in (event_logs or []):
+        combined.append({
+            "type": "event",
+            "timestamp": e.get("created_at"),
+            "symbol": "",
+            "data": e.get("message", ""),
+        })
+
+    combined.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+    return JSONResponse({"logs": combined[:limit], "total": len(combined)})
 
 
 # ── Control Endpoints ───────────────────────────────────
 
 @app.post("/api/control")
 async def control(action: str = Query(...), **kwargs):
-    """System control endpoint."""
     action = action.lower().strip()
 
     if action == "halt":
@@ -375,34 +372,23 @@ async def control(action: str = Query(...), **kwargs):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket for real-time updates."""
     await websocket.accept()
-
     async with websocket_lock:
         active_websockets.append(websocket)
-
     logger.info(f"WebSocket connected | Total: {len(active_websockets)}")
 
     try:
-        # Send current state immediately
         await websocket.send_json({
             "type": "state_update",
             "data": current_state,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
-
-        # Keep connection alive
         while True:
             try:
-                data = await asyncio.wait_for(
-                    websocket.receive_text(),
-                    timeout=30
-                )
-                # Echo back for ping/pong
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
                 if data == "ping":
                     await websocket.send_text("pong")
             except asyncio.TimeoutError:
-                # Send heartbeat
                 try:
                     await websocket.send_json({
                         "type": "heartbeat",
@@ -410,7 +396,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                 except Exception:
                     break
-
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
     except Exception as e:
@@ -423,24 +408,15 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 async def broadcast(event_type: str, data: dict):
-    """Broadcast event to all connected WebSocket clients."""
     if not active_websockets:
         return
-
-    message = json.dumps({
-        "type": event_type,
-        "data": data,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }, default=str)
-
+    message = json.dumps({"type": event_type, "data": data, "timestamp": datetime.now(timezone.utc).isoformat()}, default=str)
     disconnected = []
     for ws in active_websockets:
         try:
             await ws.send_text(message)
         except Exception:
             disconnected.append(ws)
-
-    # Clean up disconnected clients
     if disconnected:
         async with websocket_lock:
             for ws in disconnected:
@@ -449,9 +425,4 @@ async def broadcast(event_type: str, data: dict):
 
 
 async def get_system_status() -> dict:
-    """Get full system status for API consumers."""
-    return {
-        **current_state,
-        "governance": governance.get_stats(),
-        "websocket_connections": len(active_websockets),
-    }
+    return {**current_state, "governance": governance.get_stats(), "websocket_connections": len(active_websockets)}
